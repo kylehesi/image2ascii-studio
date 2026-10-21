@@ -7,7 +7,7 @@ use std::fmt::Display;
 
 use image2ascii_core::render::{self, Canvas, Frame, Rgb, Style, SvgGlyphs, SvgOptions, Typeface};
 use image2ascii_core::{
-    AsciiArt, Background, GlyphAtlas, Mode, Options, Prepared, Preset, RevealTimeline, SourceImage, ToneMapping, fonts,
+    AsciiArt, Background, GlyphAtlas, Mode, Options, Prepared, Preset, RevealOrder, RevealTimeline, SourceImage, ToneMapping, fonts,
     quality,
 };
 use serde::de::DeserializeOwned;
@@ -58,6 +58,13 @@ struct ConvertOptions {
     brightness: Option<f32>,
     gamma: Option<f32>,
     sharpen: Option<f32>,
+}
+
+fn reveal_order(name: Option<&str>) -> Result<RevealOrder, JsError> {
+    match name {
+        None => Ok(RevealOrder::default()),
+        Some(n) => RevealOrder::from_name(n).ok_or_else(|| unknown("reveal order", n)),
+    }
 }
 
 fn background(name: Option<&str>) -> Result<Background, JsError> {
@@ -128,6 +135,7 @@ struct ExportOptions {
     bg: Option<String>,
     animate: Option<bool>,
     reveal_ms: Option<u32>,
+    reveal_order: Option<String>,
     loop_pause_ms: Option<u32>,
     svg_text: Option<bool>,
 }
@@ -385,12 +393,12 @@ impl Engine {
         serde_wasm_bindgen::to_value(&Score { ssim: s.ssim, tone_error: s.tone_error }).map_err(err)
     }
 
-    /// Typewriter reveal: appearance time (ms) of each character of the last
-    /// result's `text`, in order.
-    #[wasm_bindgen(js_name = textSchedule)]
-    pub fn text_schedule(&self, duration_ms: u32) -> Result<Vec<u32>, JsError> {
+    /// Reveal timeline of the last result: appearance time (ms) of every
+    /// cell, row-major, for `order` ("typewriter", "lines", "random", "centre").
+    #[wasm_bindgen(js_name = revealTimes)]
+    pub fn reveal_times(&self, order: &str, duration_ms: u32) -> Result<Vec<u32>, JsError> {
         let art = &self.last()?.art;
-        Ok(RevealTimeline::typewriter(art, duration_ms).text_schedule(art))
+        Ok(RevealTimeline::new(art, reveal_order(Some(order))?, duration_ms).appear_ms().to_vec())
     }
 
     /// The last result as SVG (animated unless `animate: false`).
@@ -402,7 +410,8 @@ impl Engine {
             glyphs: if export.svg_text.unwrap_or(false) { SvgGlyphs::Text } else { SvgGlyphs::Paths },
             loop_pause_ms: export.loop_pause_ms,
         };
-        let timeline = RevealTimeline::typewriter(&last.art, export.reveal_ms.unwrap_or(3000));
+        let order = reveal_order(export.reveal_order.as_deref())?;
+        let timeline = RevealTimeline::new(&last.art, order, export.reveal_ms.unwrap_or(3000));
         let animation = export.animate.unwrap_or(true).then_some(&timeline);
         render::render_svg(&last.art, &self.face, &opts, animation).map_err(err)
     }

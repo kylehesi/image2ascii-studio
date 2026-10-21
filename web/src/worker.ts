@@ -88,7 +88,7 @@ async function handle(req: Request) {
       break;
     }
     case 'schedule': {
-      const times = engine.textSchedule(req.durationMs);
+      const times = engine.revealTimes(req.order, req.durationMs);
       post({ type: 'schedule', id: req.id, times }, [times.buffer]);
       break;
     }
@@ -108,6 +108,7 @@ function engineExport(opts: ExportOptions) {
     frame: opts.frame,
     title: opts.title,
     animate: opts.animate,
+    revealOrder: opts.revealOrder,
     revealMs: opts.revealMs,
     loopPauseMs: opts.loopPauseMs,
     svgText: opts.svgText,

@@ -28,7 +28,7 @@ pub use art::AsciiArt;
 pub use atlas::{Glyph, GlyphAtlas, MEASURE_PX, SHAPE_DIMS, SHAPE_X, SHAPE_Y};
 pub use charset::Preset;
 pub use error::{Error, Result};
-pub use reveal::RevealTimeline;
+pub use reveal::{RevealOrder, RevealTimeline};
 pub use source::{MAX_WORKING_SIDE, SourceImage};
 
 pub const MAX_COLS: usize = 2000;

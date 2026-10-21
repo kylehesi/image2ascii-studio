@@ -2,12 +2,11 @@
 //! it works as an `<img>` in a GitHub README, where the reveal animation
 //! plays too.
 //!
-//! The animation is a clip path with one rectangle per row whose width steps
-//! along that row's [`RevealTimeline`] (SMIL `<animate calcMode="discrete">`).
-//! Characters that appear within the same 1/60 s frame are merged into one
-//! step, which keeps the file small without changing what you see.
+//! The animation plays a [`RevealTimeline`] in any order: characters that
+//! appear within the same 1/60 s frame are grouped and the group is switched
+//! on at that moment, which keeps the file small without changing what you see.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 use super::{Layout, Style, Typeface, num};
@@ -114,6 +113,38 @@ pub fn render_svg(art: &AsciiArt, face: &Typeface, opts: &SvgOptions, timeline: 
         }
     }
 
+    let mut glyph = |ch: char| define(ch, lay.font_px, &mut ids);
+    let body = match timeline.filter(|t| t.duration_ms() > 0) {
+        Some(tl) => animated_body(art, &lay, opts, tl, &mut glyph),
+        None => static_body(art, &lay, opts, &mut glyph),
+    };
+
+    if !defs.is_empty() {
+        s.push_str("<defs>");
+        s.push_str(&defs);
+        s.push_str("</defs>");
+    }
+    s.push_str(&title);
+
+    let _ = write!(s, r#"<g transform="translate({} {})" fill="{}""#, num(lay.origin.0), num(lay.origin.1), style.fg.hex());
+    if opts.glyphs == SvgGlyphs::Text {
+        // Coding fonts merge `->`, `==` … into ligatures, which would break the grid.
+        let _ = write!(
+            s,
+            r#" font-family="{FONTS}" font-size="{}" style="font-variant-ligatures:none;font-feature-settings:'liga' 0,'calt' 0""#,
+            num(lay.font_px)
+        );
+    }
+    s.push('>');
+    s.push_str(&body);
+    s.push_str("</g></svg>\n");
+    Ok(s)
+}
+
+const FONTS: &str = "'JetBrains Mono','Cascadia Mono',Consolas,'SFMono-Regular',Menlo,'DejaVu Sans Mono',monospace";
+
+/// The finished art, one group (paths) or `<text>` (text) per inked row.
+fn static_body(art: &AsciiArt, lay: &Layout, opts: &SvgOptions, glyph: &mut dyn FnMut(char) -> Option<String>) -> String {
     let mut body = String::new();
     for r in 0..art.rows() {
         let row = art.row(r);
@@ -128,108 +159,98 @@ pub fn render_svg(art: &AsciiArt, face: &Typeface, opts: &SvgOptions, timeline: 
                     if ch == ' ' {
                         continue;
                     }
-                    if let Some(id) = define(ch, lay.font_px, &mut ids) {
+                    if let Some(id) = glyph(ch) {
                         let _ = write!(body, r##"<use href="#{id}" x="{}"/>"##, num(c as f32 * lay.cell_w));
                     }
                 }
                 body.push_str("</g>");
             }
-            SvgGlyphs::Text => {
-                let text: String = row.iter().collect();
-                let _ = write!(
-                    body,
-                    r#"<text y="{}" textLength="{}" lengthAdjust="spacing" xml:space="preserve">{}</text>"#,
-                    num(y),
-                    num(art.cols() as f32 * lay.cell_w),
-                    escape(&text)
-                );
-            }
+            SvgGlyphs::Text => text_run(&mut body, lay, row, 0, row.len(), y),
         }
     }
-
-    let clip = timeline.filter(|t| t.duration_ms() > 0).map(|t| reveal_clip(art, &lay, t, opts.loop_pause_ms));
-    if !defs.is_empty() || clip.is_some() {
-        s.push_str("<defs>");
-        s.push_str(&defs);
-        if let Some(clip) = &clip {
-            s.push_str(clip);
-        }
-        s.push_str("</defs>");
-    }
-    s.push_str(&title);
-
-    let _ = write!(s, r#"<g transform="translate({} {})" fill="{}""#, num(lay.origin.0), num(lay.origin.1), style.fg.hex());
-    if opts.glyphs == SvgGlyphs::Text {
-        // Coding fonts merge `->`, `==` … into ligatures, which would break the grid.
-        let _ = write!(
-            s,
-            r#" font-family="{FONTS}" font-size="{}" style="font-variant-ligatures:none;font-feature-settings:'liga' 0,'calt' 0""#,
-            num(lay.font_px)
-        );
-    }
-    if clip.is_some() {
-        s.push_str(r#" clip-path="url(#reveal)""#);
-    }
-    s.push('>');
-    s.push_str(&body);
-    s.push_str("</g></svg>\n");
-    Ok(s)
+    body
 }
 
-const FONTS: &str = "'JetBrains Mono','Cascadia Mono',Consolas,'SFMono-Regular',Menlo,'DejaVu Sans Mono',monospace";
+/// The art revealed over time, in any [`RevealOrder`](crate::RevealOrder):
+/// characters appearing in the same 1/60 s frame share a group whose opacity
+/// switches from 0 to 1 at that moment (SMIL `<animate calcMode="discrete">`).
+/// A group's static opacity is 1, so viewers without SMIL show the finished art.
+fn animated_body(
+    art: &AsciiArt,
+    lay: &Layout,
+    opts: &SvgOptions,
+    timeline: &RevealTimeline,
+    glyph: &mut dyn FnMut(char) -> Option<String>,
+) -> String {
+    let cycle = timeline.duration_ms() as f64 + opts.loop_pause_ms.unwrap_or(0) as f64;
+    let repeat = if opts.loop_pause_ms.is_some() { r#"repeatCount="indefinite""# } else { r#"fill="freeze""# };
 
-/// One clip rectangle per inked row; its width steps from 0 to the full row
-/// as the row's characters appear. The rectangle's static width is the full
-/// row, so viewers without SMIL show the finished art.
-fn reveal_clip(art: &AsciiArt, lay: &Layout, timeline: &RevealTimeline, loop_pause_ms: Option<u32>) -> String {
-    let duration = timeline.duration_ms() as f64;
-    let cycle = duration + loop_pause_ms.unwrap_or(0) as f64;
-    let full = art.cols() as f32 * lay.cell_w;
-    let repeat = if loop_pause_ms.is_some() { r#"repeatCount="indefinite""# } else { r#"fill="freeze""# };
-
-    let mut s = String::from(r#"<clipPath id="reveal">"#);
-    for r in 0..art.rows() {
-        // (frame, revealed columns) steps, merged per frame.
-        let mut steps: Vec<(u64, usize)> = Vec::new();
-        for (c, &ch) in art.row(r).iter().enumerate() {
-            if ch == ' ' {
-                continue;
-            }
-            let frame = (timeline.at(c, r) as f64 / FRAME_MS).round() as u64;
-            match steps.last_mut() {
-                Some(last) if last.0 == frame => last.1 = c + 1,
-                _ => steps.push((frame, c + 1)),
-            }
+    // Inked cells per frame, each frame's cells in reading order.
+    let mut frames: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    for (i, &ch) in art.cells().iter().enumerate() {
+        if ch != ' ' {
+            let frame = (timeline.appear_ms()[i] as f64 / FRAME_MS).round() as u64;
+            frames.entry(frame).or_default().push(i);
         }
-        if steps.is_empty() {
-            continue;
-        }
-        if steps[0].0 > 0 {
-            steps.insert(0, (0, 0));
-        }
-        let mut values = String::new();
-        let mut times = String::new();
-        for (i, &(frame, cols)) in steps.iter().enumerate() {
-            if i > 0 {
-                values.push(';');
-                times.push(';');
-            }
-            values.push_str(&num(cols as f32 * lay.cell_w));
-            let t = (frame as f64 * FRAME_MS / cycle).min(1.0);
-            // 5 places keep consecutive 1/60 s frames distinct up to ~10 minute cycles.
-            let _ = write!(times, "{}", trim(format!("{t:.5}")));
-        }
-        let _ = write!(
-            s,
-            r#"<rect y="{}" width="{}" height="{}"><animate attributeName="width" calcMode="discrete" dur="{}ms" {repeat} values="{values}" keyTimes="{times}"/></rect>"#,
-            num(r as f32 * lay.cell_h),
-            num(full),
-            num(lay.cell_h),
-            cycle.round() as u64,
-        );
     }
-    s.push_str("</clipPath>");
-    s
+
+    let mut body = String::new();
+    for (frame, cells) in frames {
+        body.push_str("<g>");
+        if frame > 0 {
+            let t = (frame as f64 * FRAME_MS / cycle).min(1.0);
+            let _ = write!(
+                body,
+                r#"<animate attributeName="opacity" calcMode="discrete" dur="{}ms" {repeat} values="0;1" keyTimes="0;{}"/>"#,
+                cycle.round() as u64,
+                // 5 places keep consecutive 1/60 s frames distinct up to ~10 minute cycles.
+                trim(format!("{t:.5}")),
+            );
+        }
+        match opts.glyphs {
+            SvgGlyphs::Paths => {
+                for i in cells {
+                    let (c, r) = (i % art.cols(), i / art.cols());
+                    if let Some(id) = glyph(art.cells()[i]) {
+                        let (x, y) = (c as f32 * lay.cell_w, r as f32 * lay.cell_h + lay.baseline);
+                        let _ = write!(body, r##"<use href="#{id}" x="{}" y="{}"/>"##, num(x), num(y));
+                    }
+                }
+            }
+            SvgGlyphs::Text => {
+                // Consecutive cells of one row become one run of text.
+                let mut k = 0;
+                while k < cells.len() {
+                    let start = cells[k];
+                    let mut end = start + 1;
+                    while k + 1 < cells.len() && cells[k + 1] == end && end % art.cols() != 0 {
+                        k += 1;
+                        end += 1;
+                    }
+                    let r = start / art.cols();
+                    let row = art.row(r);
+                    let y = r as f32 * lay.cell_h + lay.baseline;
+                    text_run(&mut body, lay, row, start % art.cols(), (end - 1) % art.cols() + 1, y);
+                    k += 1;
+                }
+            }
+        }
+        body.push_str("</g>");
+    }
+    body
+}
+
+/// `<text>` for columns `from..to` of a row, stretched to exactly its cells.
+fn text_run(body: &mut String, lay: &Layout, row: &[char], from: usize, to: usize, y: f32) {
+    let text: String = row[from..to].iter().collect();
+    let _ = write!(
+        body,
+        r#"<text x="{}" y="{}" textLength="{}" lengthAdjust="spacing" xml:space="preserve">{}</text>"#,
+        num(from as f32 * lay.cell_w),
+        num(y),
+        num((to - from) as f32 * lay.cell_w),
+        escape(&text)
+    );
 }
 
 fn trim(s: String) -> String {
@@ -332,32 +353,68 @@ mod tests {
         assert!(bg.attribute("rx").is_some());
     }
 
-    #[test]
-    fn animation_follows_the_timeline() {
-        let art = art();
-        let timeline = RevealTimeline::typewriter(&art, 2000);
-        let svg = render_svg(&art, &Typeface::boxes(), &opts(SvgGlyphs::Paths, false), Some(&timeline)).unwrap();
-        let doc = parse(&svg);
-        let anims: Vec<_> = doc.descendants().filter(|n| n.has_tag_name("animate")).collect();
-        let inked_rows = (0..art.rows()).filter(|&r| art.row(r).iter().any(|&c| c != ' ')).count();
-        assert_eq!(anims.len(), inked_rows);
-
-        let mut last_end = 0.0f32;
-        for a in &anims {
-            let times: Vec<f32> = a.attribute("keyTimes").unwrap().split(';').map(|t| t.parse().unwrap()).collect();
-            let values: Vec<f32> = a.attribute("values").unwrap().split(';').map(|v| v.parse().unwrap()).collect();
-            assert_eq!(times.len(), values.len());
-            assert_eq!(times[0], 0.0, "discrete animations must start at keyTime 0");
-            assert!(times.windows(2).all(|w| w[0] < w[1]), "{times:?}");
-            assert!(values.windows(2).all(|w| w[0] < w[1]), "{values:?}");
-            assert!(times.iter().all(|t| (0.0..=1.0).contains(t)));
-            // Rows reveal in order: a row starts no earlier than the previous one finished.
-            let start = if values[0] == 0.0 { times[1] } else { times[0] };
-            assert!(start + 1e-3 >= last_end, "row starts at {start} before previous ended at {last_end}");
-            last_end = *times.last().unwrap();
-            assert_eq!(a.attribute("fill"), Some("freeze"));
+    /// For each glyph drawn: (column, row, keyTime it switches on).
+    fn reveal_times(doc: &roxmltree::Document, lay_w: f32, lay_h: f32, baseline: f32) -> Vec<(usize, usize, f32)> {
+        let mut out = Vec::new();
+        for g in doc.descendants().filter(|n| n.has_tag_name("g") && n.children().any(|c| c.has_tag_name("use"))) {
+            let anim = g.children().find(|c| c.has_tag_name("animate"));
+            let t = anim.map_or(0.0, |a| {
+                let times: Vec<f32> = a.attribute("keyTimes").unwrap().split(';').map(|t| t.parse().unwrap()).collect();
+                assert_eq!(a.attribute("values"), Some("0;1"));
+                assert_eq!(times[0], 0.0, "discrete animations must start at keyTime 0");
+                assert!(times[1] > 0.0 && times[1] <= 1.0, "{times:?}");
+                times[1]
+            });
+            for u in g.children().filter(|c| c.has_tag_name("use")) {
+                let x: f32 = u.attribute("x").unwrap().parse().unwrap();
+                let y: f32 = u.attribute("y").unwrap().parse().unwrap();
+                out.push(((x / lay_w).round() as usize, ((y - baseline) / lay_h).round() as usize, t));
+            }
         }
-        assert!((last_end - 1.0).abs() < 1e-3, "last character lands at the end: {last_end}");
+        out
+    }
+
+    #[test]
+    fn animation_plays_every_reveal_order() {
+        let art = art();
+        let o = opts(SvgGlyphs::Paths, false);
+        let lay = Layout::new(&art, &Typeface::boxes(), &o.style, false).unwrap();
+        let inked = art.cells().iter().filter(|&&c| c != ' ').count();
+        for order in crate::RevealOrder::ALL {
+            let timeline = RevealTimeline::new(&art, order, 2000);
+            let svg = render_svg(&art, &Typeface::boxes(), &o, Some(&timeline)).unwrap();
+            let doc = parse(&svg);
+            let shown = reveal_times(&doc, lay.cell_w, lay.cell_h, lay.baseline);
+            assert_eq!(shown.len(), inked, "{order:?}: every inked cell drawn exactly once");
+            for &(c, r, t) in &shown {
+                assert_ne!(art.row(r)[c], ' ', "{order:?}: glyph lands on an inked cell");
+                // Each glyph switches on in the 1/60 s frame its timeline says.
+                let expected = timeline.at(c, r) as f32 / 2000.0;
+                assert!((t - expected).abs() <= 1.0 / 60.0 / 2.0 + 1e-3, "{order:?} ({c},{r}): {t} vs {expected}");
+            }
+            assert!(shown.iter().any(|s| (s.2 - 1.0).abs() < 1e-3), "{order:?}: last character lands at the end");
+            for a in doc.descendants().filter(|n| n.has_tag_name("animate")) {
+                assert_eq!(a.attribute("fill"), Some("freeze"));
+                assert_eq!(a.attribute("dur"), Some("2000ms"));
+            }
+        }
+    }
+
+    #[test]
+    fn text_mode_animates_runs_of_cells() {
+        let art = art();
+        for order in [crate::RevealOrder::Typewriter, crate::RevealOrder::Random] {
+            let timeline = RevealTimeline::new(&art, order, 1500);
+            let svg = render_svg(&art, &Typeface::boxes(), &opts(SvgGlyphs::Text, false), Some(&timeline)).unwrap();
+            let doc = parse(&svg);
+            // All the art's characters are present across the runs, none twice.
+            let drawn: usize = doc
+                .descendants()
+                .filter(|n| n.has_tag_name("text"))
+                .map(|t| t.text().unwrap_or("").chars().filter(|&c| c != ' ').count())
+                .sum();
+            assert_eq!(drawn, art.cells().iter().filter(|&&c| c != ' ').count(), "{order:?}");
+        }
     }
 
     #[test]

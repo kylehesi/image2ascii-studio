@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use image2ascii_core::render::{self, Canvas, Frame, Rgb, Style, SvgGlyphs, SvgOptions, Typeface};
 use image2ascii_core::{
-    AsciiArt, Background, GlyphAtlas, Mode, Options, Preset, RevealTimeline, SourceImage, ToneMapping, quality,
+    AsciiArt, Background, GlyphAtlas, Mode, Options, Preset, RevealOrder, RevealTimeline, SourceImage, ToneMapping,
+    quality,
 };
 use clap::{Parser, ValueEnum};
 
@@ -105,9 +106,13 @@ struct Args {
     #[arg(long, default_value_t = D.sharpen)]
     sharpen: f32,
 
-    /// Play a typewriter reveal animation in the terminal.
+    /// Play the reveal animation in the terminal.
     #[arg(long)]
     reveal: bool,
+
+    /// Reveal animation (terminal and SVG).
+    #[arg(long, value_enum, default_value_t = OrderArg::Typewriter)]
+    reveal_order: OrderArg,
 
     /// Reveal animation length in milliseconds.
     #[arg(long, default_value_t = 3000)]
@@ -174,6 +179,30 @@ fn format_of(path: &Path) -> Result<Format> {
         "svg" => Ok(Format::Svg),
         "png" => Ok(Format::Png),
         _ => bail!("{}: unknown output format, use .txt, .svg or .png", path.display()),
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum OrderArg {
+    /// One character at a time, first to last.
+    Typewriter,
+    /// Whole lines, top to bottom.
+    Lines,
+    /// Characters in random order.
+    Random,
+    /// Outwards from the centre.
+    #[value(alias = "center")]
+    Centre,
+}
+
+impl From<OrderArg> for RevealOrder {
+    fn from(o: OrderArg) -> Self {
+        match o {
+            OrderArg::Typewriter => RevealOrder::Typewriter,
+            OrderArg::Lines => RevealOrder::Lines,
+            OrderArg::Random => RevealOrder::Random,
+            OrderArg::Centre => RevealOrder::Centre,
+        }
     }
 }
 
@@ -265,10 +294,12 @@ fn main() -> Result<()> {
         eprintln!("ssim {:.4}  tone error {:.4}", s.ssim, s.tone_error);
     }
 
-    let timeline = RevealTimeline::typewriter(&art, args.reveal_ms);
+    let timeline = RevealTimeline::new(&art, args.reveal_order.into(), args.reveal_ms);
     let mut face = None;
     for (path, format) in &outputs {
         let bytes = match format {
+            // Native line endings: some Windows programs show LF-only text as one line.
+            Format::Txt if cfg!(windows) => text.replace('\n', "\r\n").into_bytes(),
             Format::Txt => text.clone().into_bytes(),
             Format::Svg | Format::Png => {
                 let face = match &face {
@@ -295,7 +326,7 @@ fn main() -> Result<()> {
 
     let stdout = io::stdout();
     if args.reveal && stdout.is_terminal() {
-        play(&art, &timeline, args.fps, &mut stdout.lock())?;
+        play(&art, &timeline, args.fps, can_redraw(&art), &mut stdout.lock())?;
     } else if outputs.is_empty() {
         stdout.lock().write_all(text.as_bytes())?;
     }
@@ -362,26 +393,39 @@ fn style(args: &Args, background: Background, original: (usize, usize)) -> Resul
     Ok(style)
 }
 
-/// Streams the art to the terminal frame by frame. The typewriter timeline is
-/// in reading order, so plain sequential output reproduces it exactly.
-fn play(art: &AsciiArt, timeline: &RevealTimeline, fps: u32, out: &mut impl Write) -> io::Result<()> {
-    let stream: Vec<(u32, char)> = timeline.text_schedule(art).into_iter().zip(art.to_text().chars()).collect();
+/// Plays the reveal in the terminal. Reading-order reveals are streamed as
+/// plain text; the others redraw the art in place each frame, which needs a
+/// terminal with ANSI cursor movement that fits the whole art — otherwise the
+/// finished art is printed at once.
+fn play(art: &AsciiArt, timeline: &RevealTimeline, fps: u32, can_redraw: bool, out: &mut impl Write) -> io::Result<()> {
+    if timeline.order().is_sequential() {
+        stream(art, timeline, fps, out)
+    } else if can_redraw {
+        redraw(art, timeline, fps, out)
+    } else {
+        out.write_all(art.to_text().as_bytes())
+    }
+}
 
+/// Whether the art can be redrawn in place: ANSI cursor movement works (on
+/// Windows this also switches it on for older consoles) and the art fits.
+fn can_redraw(art: &AsciiArt) -> bool {
+    #[cfg(windows)]
+    let ansi = crossterm::ansi_support::supports_ansi();
+    #[cfg(not(windows))]
+    let ansi = true;
+    let fits = crossterm::terminal::size()
+        .is_ok_and(|(w, h)| art.cols() <= w as usize && art.rows() < h as usize);
+    ansi && fits
+}
+
+/// Runs `step(elapsed_ms)` once per frame at `fps` until it returns true.
+fn frames(fps: u32, mut step: impl FnMut(u128) -> io::Result<bool>) -> io::Result<()> {
     let frame = Duration::from_secs_f64(1.0 / fps as f64);
     let start = Instant::now();
-    let mut next = 0;
-    let mut buf = String::new();
     for n in 1u32.. {
         let deadline = start + frame * n;
-        let now_ms = deadline.duration_since(start).as_millis();
-        buf.clear();
-        while next < stream.len() && u128::from(stream[next].0) <= now_ms {
-            buf.push(stream[next].1);
-            next += 1;
-        }
-        out.write_all(buf.as_bytes())?;
-        out.flush()?;
-        if next == stream.len() {
+        if step(deadline.duration_since(start).as_millis())? {
             break;
         }
         if let Some(wait) = deadline.checked_duration_since(Instant::now()) {
@@ -389,6 +433,54 @@ fn play(art: &AsciiArt, timeline: &RevealTimeline, fps: u32, out: &mut impl Writ
         }
     }
     Ok(())
+}
+
+/// Reveals scattered characters by redrawing the art in place: reserve its
+/// lines, then each frame move back up and print it with what has appeared so far.
+fn redraw(art: &AsciiArt, timeline: &RevealTimeline, fps: u32, out: &mut impl Write) -> io::Result<()> {
+    let (cols, rows) = (art.cols(), art.rows());
+    let mut shown = vec![' '; cols * rows];
+    let mut order: Vec<usize> = (0..shown.len()).filter(|&i| art.cells()[i] != ' ').collect();
+    order.sort_by_key(|&i| timeline.appear_ms()[i]);
+
+    out.write_all("\n".repeat(rows).as_bytes())?;
+    let mut next = 0;
+    let mut buf = String::new();
+    frames(fps, |now_ms| {
+        while next < order.len() && u128::from(timeline.appear_ms()[order[next]]) <= now_ms {
+            shown[order[next]] = art.cells()[order[next]];
+            next += 1;
+        }
+        buf.clear();
+        // Cursor up `rows` lines, back to column 0. Characters only ever
+        // appear, so overwriting each line with its trimmed text is enough.
+        buf.push_str(&format!("\x1b[{rows}A\r"));
+        for row in shown.chunks(cols) {
+            let end = row.iter().rposition(|&c| c != ' ').map_or(0, |i| i + 1);
+            buf.extend(&row[..end]);
+            buf.push('\n');
+        }
+        out.write_all(buf.as_bytes())?;
+        out.flush()?;
+        Ok(next == order.len())
+    })
+}
+
+/// Streams the text in reading order, frame by frame.
+fn stream(art: &AsciiArt, timeline: &RevealTimeline, fps: u32, out: &mut impl Write) -> io::Result<()> {
+    let stream: Vec<(u32, char)> = timeline.text_schedule(art).into_iter().zip(art.to_text().chars()).collect();
+    let mut next = 0;
+    let mut buf = String::new();
+    frames(fps, |now_ms| {
+        buf.clear();
+        while next < stream.len() && u128::from(stream[next].0) <= now_ms {
+            buf.push(stream[next].1);
+            next += 1;
+        }
+        out.write_all(buf.as_bytes())?;
+        out.flush()?;
+        Ok(next == stream.len())
+    })
 }
 
 #[cfg(test)]
@@ -406,16 +498,46 @@ mod tests {
         assert!(Args::try_parse_from(["image2ascii"]).is_err());
     }
 
-    #[test]
-    fn reveal_prints_exactly_the_text_output() {
+    fn sample_art() -> AsciiArt {
         let rgba: Vec<u8> = (0..40 * 30).flat_map(|i| [(i * 13 % 256) as u8, 120, (i % 200) as u8, 255]).collect();
         let src = SourceImage::from_rgba8(40, 30, &rgba).unwrap();
         let atlas = GlyphAtlas::from_coverages(&[(' ', 0.0), ('.', 0.1), ('+', 0.4), ('@', 0.9)], 0.5).unwrap();
-        let art = image2ascii_core::convert(&src, &atlas, &Options { cols: 20, ..Options::DEFAULT }).unwrap();
+        image2ascii_core::convert(&src, &atlas, &Options { cols: 20, ..Options::DEFAULT }).unwrap()
+    }
 
-        let mut out = Vec::new();
-        play(&art, &RevealTimeline::typewriter(&art, 30), 240, &mut out).unwrap();
-        assert_eq!(String::from_utf8(out).unwrap(), art.to_text());
+    #[test]
+    fn sequential_reveals_print_exactly_the_text_output() {
+        let art = sample_art();
+        for order in [RevealOrder::Typewriter, RevealOrder::Lines] {
+            let mut out = Vec::new();
+            play(&art, &RevealTimeline::new(&art, order, 30), 240, true, &mut out).unwrap();
+            assert_eq!(String::from_utf8(out).unwrap(), art.to_text(), "{order:?}");
+        }
+    }
+
+    #[test]
+    fn scattered_reveals_redraw_in_place_and_end_on_the_art() {
+        let art = sample_art();
+        for order in [RevealOrder::Random, RevealOrder::Centre] {
+            let mut out = Vec::new();
+            play(&art, &RevealTimeline::new(&art, order, 30), 240, true, &mut out).unwrap();
+            let out = String::from_utf8(out).unwrap();
+            let last_frame = format!("\x1b[{}A\r{}", art.rows(), art.to_text());
+            assert!(out.ends_with(&last_frame), "{order:?} ends on the finished art");
+            assert!(out.starts_with(&"\n".repeat(art.rows())), "{order:?} reserves the lines first");
+            // Without cursor movement it falls back to printing the art.
+            let mut plain = Vec::new();
+            play(&art, &RevealTimeline::new(&art, order, 30), 240, false, &mut plain).unwrap();
+            assert_eq!(String::from_utf8(plain).unwrap(), art.to_text());
+        }
+    }
+
+    #[test]
+    fn reveal_orders_parse() {
+        let args = Args::try_parse_from(["image2ascii", "x.png", "--reveal-order", "center"]).unwrap();
+        assert_eq!(RevealOrder::from(args.reveal_order), RevealOrder::Centre);
+        let args = Args::try_parse_from(["image2ascii", "x.png"]).unwrap();
+        assert_eq!(RevealOrder::from(args.reveal_order), RevealOrder::Typewriter);
     }
 
     #[test]

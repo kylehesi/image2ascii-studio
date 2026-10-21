@@ -17,6 +17,8 @@ export type ConvertOptions = {
   sharpen: number;
 };
 
+export type RevealOrder = 'typewriter' | 'lines' | 'random' | 'centre';
+
 export type ExportOptions = {
   /** Canvas size in pixels; `null` uses the loaded image's original size. */
   size: [number, number] | null;
@@ -25,6 +27,7 @@ export type ExportOptions = {
   frame: boolean;
   title: string;
   animate: boolean;
+  revealOrder: RevealOrder;
   revealMs: number;
   loopPauseMs?: number;
   svgText: boolean;
@@ -62,7 +65,7 @@ export type Request =
   | { type: 'convert'; id: number; options: ConvertOptions; export: ExportOptions }
   | { type: 'geometry'; id: number; export: ExportOptions }
   | { type: 'export'; id: number; format: 'svg' | 'png'; options: ExportOptions }
-  | { type: 'schedule'; id: number; durationMs: number };
+  | { type: 'schedule'; id: number; order: RevealOrder; durationMs: number };
 
 export type Response =
   | {
@@ -76,5 +79,6 @@ export type Response =
   | { type: 'geometry'; id: number; geometry: Geometry }
   | { type: 'score'; id: number; ssim: number; toneError: number }
   | { type: 'exported'; id: number; format: 'svg' | 'png'; data: string | Uint8Array }
+  /** Appearance time (ms) of every cell of the last result, row-major. */
   | { type: 'schedule'; id: number; times: Uint32Array }
   | { type: 'error'; id: number; message: string };

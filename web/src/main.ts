@@ -1,6 +1,6 @@
 import './style.css';
 import licenseUrl from '../../assets/fonts/JetBrainsMono-OFL.txt?url';
-import type { ConvertOptions, ExportOptions, Geometry, Request, Response } from './protocol';
+import type { ConvertOptions, ExportOptions, Geometry, Request, Response, RevealOrder } from './protocol';
 
 // ---------------------------------------------------------------- worker
 
@@ -52,6 +52,7 @@ type ExportState = {
   frame: boolean;
   title: string;
   animate: boolean;
+  revealOrder: RevealOrder;
   revealMs: number;
   loop: boolean;
   loopPause: number;
@@ -90,6 +91,7 @@ const exportDefaults: ExportState = {
   frame: true,
   title: '',
   animate: true,
+  revealOrder: 'typewriter',
   revealMs: 3000,
   loop: false,
   loopPause: 2000,
@@ -462,6 +464,25 @@ function buildControls() {
     }),
     () => e().frame,
   );
+  const orders = document.createElement('select');
+  orders.setAttribute('aria-label', 'Reveal animation');
+  for (const [value, label] of [
+    ['typewriter', 'Typewriter — one character at a time'],
+    ['lines', 'Line by line — top to bottom'],
+    ['random', 'Random — characters pop in'],
+    ['centre', 'From the centre — grows outwards'],
+  ]) {
+    orders.add(new Option(label, value));
+  }
+  orders.addEventListener('change', () => {
+    e().revealOrder = orders.value as RevealOrder;
+    stopPlaying();
+    exportChanged();
+  });
+  refreshers.push(() => (orders.value = e().revealOrder));
+  orders.value = e().revealOrder;
+  field(exp, 'Reveal animation (Play and SVG)', orders);
+
   check(exp, 'SVG animation', () => e().animate, (v) => {
     e().animate = v;
     exportChanged();
@@ -547,6 +568,7 @@ function exportOptions(): ExportOptions {
     frame: e.frame,
     title: titleText(),
     animate: e.animate,
+    revealOrder: e.revealOrder,
     revealMs: e.revealMs,
     loopPauseMs: e.animate && e.loop ? e.loopPause : undefined,
     svgText: e.svgText,
@@ -664,25 +686,32 @@ async function play() {
     return;
   }
   const shown = result;
-  const r = await call({ type: 'schedule', durationMs: state.export.revealMs });
+  const r = await call({ type: 'schedule', order: state.export.revealOrder, durationMs: state.export.revealMs });
   if (r.type !== 'schedule' || result !== shown) return;
-  const chars = Array.from(shown.text);
+  const { cols, rows } = shown;
+  // The full grid (the text has trailing spaces trimmed), and cells by appearance time.
+  const lines = shown.text.split('\n');
+  const grid = Array.from({ length: rows }, (_, row) => Array.from((lines[row] ?? '').padEnd(cols, ' ')));
   const times = r.times;
+  const order = Array.from(times.keys())
+    .filter((i) => grid[Math.floor(i / cols)][i % cols] !== ' ')
+    .sort((a, b) => times[a] - times[b]);
+  const visible = grid.map((line) => line.map(() => ' '));
+  let next = 0;
   const start = performance.now();
   $('play').textContent = '■ Stop';
   const frame = () => {
     const t = performance.now() - start;
-    // First index whose time is still in the future.
-    let lo = 0;
-    let hi = times.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (times[mid] <= t) lo = mid + 1;
-      else hi = mid;
+    while (next < order.length && times[order[next]] <= t) {
+      const i = order[next++];
+      visible[Math.floor(i / cols)][i % cols] = grid[Math.floor(i / cols)][i % cols];
     }
-    art.textContent = chars.slice(0, lo).join('');
-    if (lo < chars.length) playing = requestAnimationFrame(frame);
-    else stopPlaying();
+    art.textContent = visible.map((line) => line.join('').trimEnd()).join('\n') + '\n';
+    if (next < order.length) playing = requestAnimationFrame(frame);
+    else {
+      stopPlaying();
+      art.textContent = shown.text;
+    }
   };
   playing = requestAnimationFrame(frame);
 }
@@ -815,6 +844,11 @@ async function sampleImage(): Promise<Blob> {
 
 // ---------------------------------------------------------------- output
 
+/** Windows programs expect CRLF line endings in text files. */
+const isWindows = /Win/i.test(
+  (navigator as Navigator & { userAgentData?: { platform: string } }).userAgentData?.platform ?? navigator.platform,
+);
+
 function download(data: BlobPart, name: string, type: string) {
   const url = URL.createObjectURL(new Blob([data], { type }));
   const a = document.createElement('a');
@@ -850,7 +884,12 @@ function wireActions() {
       toast('Clipboard unavailable; select the text and copy it manually.', true);
     }
   });
-  $('dl-txt').addEventListener('click', () => result && download(result.text, `${sourceName}.txt`, 'text/plain;charset=utf-8'));
+  $('dl-txt').addEventListener('click', () => {
+    if (!result) return;
+    download(isWindows ? result.text.replace(/\n/g, '\r\n') : result.text, `${sourceName}.txt`, 'text/plain;charset=utf-8');
+    // Notepad wraps long lines by default, which scrambles the art.
+    if (isWindows) toast('Opening it in Notepad? Turn off View › Word wrap so long lines stay whole.');
+  });
   $('dl-svg').addEventListener('click', () => void exportAs('svg'));
   $('dl-png').addEventListener('click', () => void exportAs('png'));
 }

@@ -25,7 +25,7 @@ you can drop straight into a GitHub profile README.
 
 - **Looks like the photo.** Characters are chosen by the *shape* of each cell, not just its brightness, so outlines, hair and edges follow `/ \ | _ ( )` strokes while flat areas stay smooth.
 - **Calibrated to the font.** Every glyph's real ink coverage is measured in the bundled JetBrains Mono, so tones come out right instead of guessed from a hand-written ramp.
-- **Animated SVG export.** A typewriter reveal that plays anywhere an image can — including a GitHub README, with no scripts.
+- **Animated SVG export.** Four reveal animations — typewriter, line by line, random, and growing from the centre — that play anywhere an image can, including a GitHub README, with no scripts.
 - **PNG and plain text too.** Same art, three formats.
 - **Any output size.** Defaults to your image's own size; one-click presets for avatars, posts, stories, HD, 4K and social previews, with 1–4× scaling.
 - **Fast and private.** Multi-threaded native CLI; the web app runs the same Rust engine as WebAssembly, entirely on your device. Nothing is uploaded.
@@ -41,7 +41,9 @@ you can drop straight into a GitHub profile README.
 
 **[kylehesi.github.io/image2ascii-studio](https://kylehesi.github.io/image2ascii-studio/)** — no installation.
 
-Open it, drop, paste (<kbd>Ctrl</kbd>+<kbd>V</kbd>) or choose an image — or try the built-in sample — and tune it live: width, matching mode, character set, background, dithering and tone. Preview the reveal animation, then export TXT, SVG or PNG — or copy the text. Settings are remembered between visits.
+Open it, drop, paste (<kbd>Ctrl</kbd>+<kbd>V</kbd>) or choose an image — or try the built-in sample — and tune it live: width, matching mode, character set, background, dithering and tone. Pick a reveal animation and preview it, then export TXT, SVG or PNG — or copy the text. Settings are remembered between visits.
+
+> **Viewing the TXT in Notepad?** Turn off *View › Word wrap* — wide art has long lines, and wrapping them scrambles the picture.
 
 <!-- IMAGE SLOT: docs/images/web-app.png — the web app with an image loaded.
 <p align="center">
@@ -66,6 +68,7 @@ cargo install --git https://github.com/kylehesi/image2ascii-studio image2ascii-s
 ```sh
 image2ascii photo.jpg                                   # print to the terminal
 image2ascii photo.jpg --reveal                          # ... with the typewriter animation
+image2ascii photo.jpg --reveal --reveal-order centre    # ... or lines, random, centre
 image2ascii photo.jpg -o art.txt -o art.svg -o art.png  # save; format from the extension
 image2ascii photo.jpg -c 160 -o art.svg                 # more detail (160 characters wide)
 image2ascii photo.jpg --size 1080x1080 -o post.png      # exact image size, art centred
@@ -83,7 +86,8 @@ image2ascii photo.jpg --background light -o art.svg     # dark ink: light pages,
 | `--contrast`, `--brightness`, `--gamma`, `--clahe`, `--sharpen` | Tone adjustments |
 | `--size original\|WxH`, `--scale` | SVG/PNG image size (default: the input's size) |
 | `--no-frame`, `--title`, `--fg`, `--bg` | Window frame and colours |
-| `--reveal-ms 3000`, `--loop-pause 2000`, `--no-animate` | SVG animation |
+| `--reveal-order typewriter\|lines\|random\|centre` | Reveal animation (terminal and SVG) |
+| `--reveal-ms 3000`, `--loop-pause 2000`, `--no-animate` | Animation length, SVG looping, static SVG |
 | `--svg-text` | Smaller SVG using `<text>` (drawn in the viewer's font) |
 | `--score` | Print SSIM and tone error against the source |
 
