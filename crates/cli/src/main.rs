@@ -5,8 +5,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use ascii_core::render::{self, Canvas, Frame, Rgb, Style, SvgGlyphs, SvgOptions, Typeface};
-use ascii_core::{
+use image2ascii_core::render::{self, Canvas, Frame, Rgb, Style, SvgGlyphs, SvgOptions, Typeface};
+use image2ascii_core::{
     AsciiArt, Background, GlyphAtlas, Mode, Options, Preset, RevealTimeline, SourceImage, ToneMapping, quality,
 };
 use clap::{Parser, ValueEnum};
@@ -15,7 +15,7 @@ const D: Options = Options::DEFAULT;
 
 /// Convert an image to ASCII art.
 #[derive(Parser)]
-#[command(name = "img2ascii", version)]
+#[command(name = "image2ascii", version)]
 struct Args {
     /// Image to convert (PNG, JPEG, WebP, GIF, BMP, TIFF).
     input: PathBuf,
@@ -215,7 +215,7 @@ fn main() -> Result<()> {
 
     let font = match &args.font {
         Some(p) => fs::read(p).with_context(|| format!("reading font {}", p.display()))?,
-        None => ascii_core::fonts::DEFAULT.to_vec(),
+        None => image2ascii_core::fonts::DEFAULT.to_vec(),
     };
 
     let opts = Options {
@@ -258,7 +258,7 @@ fn main() -> Result<()> {
         .chars(),
     };
     let atlas = GlyphAtlas::new(&font, &charset).context("calibrating glyphs")?;
-    let art = ascii_core::convert(&src, &atlas, &opts)?;
+    let art = image2ascii_core::convert(&src, &atlas, &opts)?;
     let text = art.to_text();
     if args.score {
         let s = quality::evaluate(&src, &atlas, &opts, &art)?;
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn input_is_required() {
-        assert!(Args::try_parse_from(["img2ascii"]).is_err());
+        assert!(Args::try_parse_from(["image2ascii"]).is_err());
     }
 
     #[test]
@@ -411,7 +411,7 @@ mod tests {
         let rgba: Vec<u8> = (0..40 * 30).flat_map(|i| [(i * 13 % 256) as u8, 120, (i % 200) as u8, 255]).collect();
         let src = SourceImage::from_rgba8(40, 30, &rgba).unwrap();
         let atlas = GlyphAtlas::from_coverages(&[(' ', 0.0), ('.', 0.1), ('+', 0.4), ('@', 0.9)], 0.5).unwrap();
-        let art = ascii_core::convert(&src, &atlas, &Options { cols: 20, ..Options::DEFAULT }).unwrap();
+        let art = image2ascii_core::convert(&src, &atlas, &Options { cols: 20, ..Options::DEFAULT }).unwrap();
 
         let mut out = Vec::new();
         play(&art, &RevealTimeline::typewriter(&art, 30), 240, &mut out).unwrap();
@@ -438,20 +438,20 @@ mod tests {
 
     #[test]
     fn default_canvas_is_the_original_size() {
-        let args = Args::try_parse_from(["img2ascii", "x.png"]).unwrap();
+        let args = Args::try_parse_from(["image2ascii", "x.png"]).unwrap();
         assert_eq!(canvas(&args, (430, 383)).unwrap(), Canvas::Fixed { width: 430, height: 383 });
-        let args = Args::try_parse_from(["img2ascii", "x.png", "--scale", "2"]).unwrap();
+        let args = Args::try_parse_from(["image2ascii", "x.png", "--scale", "2"]).unwrap();
         assert_eq!(canvas(&args, (430, 383)).unwrap(), Canvas::Fixed { width: 860, height: 766 });
-        let args = Args::try_parse_from(["img2ascii", "x.png", "--size", "500x500"]).unwrap();
+        let args = Args::try_parse_from(["image2ascii", "x.png", "--size", "500x500"]).unwrap();
         assert_eq!(canvas(&args, (50, 100)).unwrap(), Canvas::Fixed { width: 500, height: 500 });
-        let args = Args::try_parse_from(["img2ascii", "x.png", "--font-size", "12"]).unwrap();
+        let args = Args::try_parse_from(["image2ascii", "x.png", "--font-size", "12"]).unwrap();
         assert_eq!(canvas(&args, (50, 100)).unwrap(), Canvas::FontSize(12.0));
-        assert!(Args::try_parse_from(["img2ascii", "x.png", "--font-size", "12", "--size", "9x9"]).is_err());
+        assert!(Args::try_parse_from(["image2ascii", "x.png", "--font-size", "12", "--size", "9x9"]).is_err());
     }
 
     #[test]
     fn negative_brightness_parses() {
-        let args = Args::try_parse_from(["img2ascii", "x.png", "--brightness", "-0.2"]).unwrap();
+        let args = Args::try_parse_from(["image2ascii", "x.png", "--brightness", "-0.2"]).unwrap();
         assert_eq!(args.brightness, -0.2);
     }
 }

@@ -65,7 +65,7 @@ type UiState = {
   export: ExportState;
 };
 
-const STORAGE_KEY = 'img2ascii:v1';
+const STORAGE_KEY = 'image2ascii-studio:v1';
 
 let defaults: ConvertOptions;
 /** Per pixel of font size: advance, line height, ascent, descent (negative). */

@@ -86,30 +86,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "ascii-core"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "fontdue",
- "image",
- "rayon",
- "roxmltree",
- "thiserror",
- "ttf-parser",
-]
-
-[[package]]
-name = "ascii-wasm"
-version = "0.1.0"
-dependencies = [
- "ascii-core",
- "console_error_panic_hook",
- "serde",
- "serde-wasm-bindgen",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -475,12 +451,36 @@ dependencies = [
 ]
 
 [[package]]
-name = "img2ascii"
+name = "image2ascii-core"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "fontdue",
+ "image",
+ "rayon",
+ "roxmltree",
+ "thiserror",
+ "ttf-parser",
+]
+
+[[package]]
+name = "image2ascii-studio"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ascii-core",
  "clap",
+ "image2ascii-core",
+]
+
+[[package]]
+name = "image2ascii-wasm"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "image2ascii-core",
+ "serde",
+ "serde-wasm-bindgen",
+ "wasm-bindgen",
 ]
 
 [[package]]

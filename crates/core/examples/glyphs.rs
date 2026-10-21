@@ -2,11 +2,11 @@
 //! centre of ink and vertical spread in a font — the data behind the charset
 //! presets.
 //!
-//! cargo run --release -p ascii-core --example glyphs -- <font>
+//! cargo run --release -p image2ascii-core --example glyphs -- <font>
 
 use std::{env, fs};
 
-use ascii_core::{GlyphAtlas, Preset};
+use image2ascii_core::{GlyphAtlas, Preset};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let font = fs::read(env::args().nth(1).ok_or("usage: glyphs <font>")?)?;

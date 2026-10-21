@@ -1,11 +1,20 @@
 [package]
-name = "img2ascii"
-description = "Command-line image to ASCII converter"
+name = "image2ascii-studio"
+description = "Convert images to ASCII art: text, animated SVG and PNG, from the command line"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["ascii", "ascii-art", "image", "cli", "svg"]
+categories = ["command-line-utilities", "multimedia::images"]
 
 [dependencies]
 anyhow = "1"
-ascii-core.workspace = true
+image2ascii-core.workspace = true
 clap = { version = "4", features = ["derive"] }
+
+[[bin]]
+name = "image2ascii"
+path = "src/main.rs"

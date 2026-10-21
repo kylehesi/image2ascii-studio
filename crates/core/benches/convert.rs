@@ -1,10 +1,10 @@
-//! `cargo bench -p ascii-core` — end-to-end conversion of synthetic photos
+//! `cargo bench -p image2ascii-core` — end-to-end conversion of synthetic photos
 //! (no decode), per mode and size.
 
 #[path = "../tests/common/mod.rs"]
 mod common;
 
-use ascii_core::{Mode, Options};
+use image2ascii_core::{Mode, Options};
 use criterion::{Criterion, criterion_group, criterion_main};
 
 fn bench(c: &mut Criterion) {
@@ -21,7 +21,7 @@ fn bench(c: &mut Criterion) {
         for mode in [Mode::Density, Mode::Shape] {
             let opts = Options { cols, mode, ..Options::DEFAULT };
             c.bench_function(&format!("{label} {cols} cols {mode:?}"), |b| {
-                b.iter(|| ascii_core::convert(&src, &atlas, &opts).unwrap())
+                b.iter(|| image2ascii_core::convert(&src, &atlas, &opts).unwrap())
             });
         }
     }

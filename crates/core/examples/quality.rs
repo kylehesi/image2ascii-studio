@@ -1,14 +1,14 @@
 //! Dev tool: sweeps conversion settings over a set of images and prints the
 //! mean quality score of each, to tune defaults on data instead of by eye.
 //!
-//! cargo run --release -p ascii-core --example quality -- <font> <cols> <image>...
+//! cargo run --release -p image2ascii-core --example quality -- <font> <cols> <image>...
 //!
 //! Extra charsets to compare can be passed in CHARSETS, one per line.
 
 use std::{env, fs};
 
-use ascii_core::quality::{Score, evaluate};
-use ascii_core::{GlyphAtlas, Mode, Options, Preset, SourceImage};
+use image2ascii_core::quality::{Score, evaluate};
+use image2ascii_core::{GlyphAtlas, Mode, Options, Preset, SourceImage};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         charsets.extend(extra.lines().enumerate().map(|(i, c)| (format!("custom{i}"), c.to_owned())));
     }
     let atlases =
-        charsets.iter().map(|(n, c)| Ok((n.clone(), GlyphAtlas::new(&font, c)?))).collect::<ascii_core::Result<Vec<_>>>()?;
+        charsets.iter().map(|(n, c)| Ok((n.clone(), GlyphAtlas::new(&font, c)?))).collect::<image2ascii_core::Result<Vec<_>>>()?;
     let base = Options { cols, ..Options::DEFAULT };
     let mut configs: Vec<(String, Options)> = Vec::new();
     for dither in [0.0, 0.5] {
@@ -52,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for (label, opts) in &configs {
             let mut total = Score { ssim: 0.0, tone_error: 0.0 };
             for src in &sources {
-                let art = ascii_core::convert(src, atlas, opts)?;
+                let art = image2ascii_core::convert(src, atlas, opts)?;
                 let s = evaluate(src, atlas, opts, &art)?;
                 total.ssim += s.ssim / sources.len() as f32;
                 total.tone_error += s.tone_error / sources.len() as f32;

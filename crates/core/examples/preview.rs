@@ -1,7 +1,7 @@
 //! Dev tool: converts an image and renders the result back to a PNG with the
 //! same font, so tuning can be judged by eye. Prints the quality score too.
 //!
-//! cargo run --release -p ascii-core --example preview -- <image> <font> <out.png> [key=value]...
+//! cargo run --release -p image2ascii-core --example preview -- <image> <font> <out.png> [key=value]...
 //!
 //! Keys: cols, bg (dark|light), mode (shape|density), charset (simple|standard|structure|full|<chars>),
 //! weight, dither, clahe, tone (perceptual|linear). Always draws light glyphs on black, so
@@ -9,7 +9,7 @@
 
 use std::{env, fs};
 
-use ascii_core::{Background, GlyphAtlas, Mode, Options, Preset, SourceImage, ToneMapping, quality};
+use image2ascii_core::{Background, GlyphAtlas, Mode, Options, Preset, SourceImage, ToneMapping, quality};
 use image::{GrayImage, Luma};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let src = SourceImage::decode(&fs::read(input)?)?;
 
     let start = std::time::Instant::now();
-    let art = ascii_core::convert(&src, &measure, &opts)?;
+    let art = image2ascii_core::convert(&src, &measure, &opts)?;
     let took = start.elapsed();
     let score = quality::evaluate(&src, &measure, &opts, &art)?;
     eprintln!(

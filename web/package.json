@@ -1,10 +1,12 @@
 {
-  "name": "img2ascii-web",
+  "name": "image2ascii-studio-web",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
+  "description": "Image to ASCII art in the browser: live preview, animated SVG and PNG export",
   "type": "module",
   "scripts": {
-    "wasm": "cargo build -p ascii-wasm --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir src/wasm ../target/wasm32-unknown-unknown/release/ascii_wasm.wasm",
+    "wasm": "cargo build -p image2ascii-wasm --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir src/wasm ../target/wasm32-unknown-unknown/release/image2ascii_wasm.wasm",
     "dev": "npm run wasm && vite",
     "build": "npm run wasm && tsc --noEmit && vite build",
     "preview": "vite preview"

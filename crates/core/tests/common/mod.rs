@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use ascii_core::{GlyphAtlas, SourceImage};
+use image2ascii_core::{GlyphAtlas, SourceImage};
 
 const CW: usize = 8;
 const CH: usize = 16;

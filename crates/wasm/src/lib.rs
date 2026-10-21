@@ -5,8 +5,8 @@
 
 use std::fmt::Display;
 
-use ascii_core::render::{self, Canvas, Frame, Rgb, Style, SvgGlyphs, SvgOptions, Typeface};
-use ascii_core::{
+use image2ascii_core::render::{self, Canvas, Frame, Rgb, Style, SvgGlyphs, SvgOptions, Typeface};
+use image2ascii_core::{
     AsciiArt, Background, GlyphAtlas, Mode, Options, Prepared, Preset, RevealTimeline, SourceImage, ToneMapping, fonts,
     quality,
 };
@@ -365,7 +365,7 @@ impl Engine {
         self.atlas(&charset)?;
         let atlas = &self.atlases.last().expect("cached").1;
         let prepared = self.prepared.as_ref().expect("prepared");
-        let art = ascii_core::convert_prepared(prepared, atlas, &options).map_err(err)?;
+        let art = image2ascii_core::convert_prepared(prepared, atlas, &options).map_err(err)?;
         let result = Converted { text: art.to_text(), cols: art.cols(), rows: art.rows() };
         self.last = Some(Last { art, options, charset });
         serde_wasm_bindgen::to_value(&result).map_err(err)

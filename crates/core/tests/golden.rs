@@ -10,8 +10,8 @@ mod common;
 use std::path::PathBuf;
 use std::{env, fs};
 
-use ascii_core::quality::evaluate;
-use ascii_core::{Mode, Options};
+use image2ascii_core::quality::evaluate;
+use image2ascii_core::{Mode, Options};
 
 const COLS: usize = 40;
 
@@ -31,7 +31,7 @@ fn outputs_match_golden_snapshots() {
     let mut mismatches = Vec::new();
     for (name, src) in common::images() {
         for mode in [Mode::Density, Mode::Shape] {
-            let text = ascii_core::convert(&src, &atlas, &options(mode)).unwrap().to_text();
+            let text = image2ascii_core::convert(&src, &atlas, &options(mode)).unwrap().to_text();
             let path = golden_path(name, mode);
             if update {
                 fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -61,7 +61,7 @@ fn shape_mode_beats_density_on_structured_images() {
         }
         let score = |mode| {
             let opts = options(mode);
-            let art = ascii_core::convert(&src, &atlas, &opts).unwrap();
+            let art = image2ascii_core::convert(&src, &atlas, &opts).unwrap();
             evaluate(&src, &atlas, &opts, &art).unwrap().ssim
         };
         let (density, shape) = (score(Mode::Density), score(Mode::Shape));
@@ -91,7 +91,7 @@ fn quality_floors() {
     for &(name, mode, floor) in FLOORS {
         let src = &images.iter().find(|i| i.0 == name).unwrap().1;
         let opts = options(mode);
-        let art = ascii_core::convert(src, &atlas, &opts).unwrap();
+        let art = image2ascii_core::convert(src, &atlas, &opts).unwrap();
         let ssim = evaluate(src, &atlas, &opts, &art).unwrap().ssim;
         report.push(format!("(\"{name}\", Mode::{mode:?}, {ssim:.4}),"));
         assert!(ssim >= floor - 1e-4, "{name} {mode:?}: ssim {ssim:.4} fell below floor {floor:.4}");
@@ -105,7 +105,7 @@ fn dithering_improves_tone_on_gradients() {
     let src = &common::images()[0].1;
     let tone_error = |dither| {
         let opts = Options { dither, ..options(Mode::Density) };
-        let art = ascii_core::convert(src, &atlas, &opts).unwrap();
+        let art = image2ascii_core::convert(src, &atlas, &opts).unwrap();
         evaluate(src, &atlas, &opts, &art).unwrap().tone_error
     };
     let (plain, dithered) = (tone_error(0.0), tone_error(1.0));
@@ -119,9 +119,9 @@ fn parallel_matches_sequential_semantics() {
     // different thread interleavings) must agree exactly.
     let atlas = common::atlas();
     for (_, src) in common::images() {
-        let first = ascii_core::convert(&src, &atlas, &options(Mode::Shape)).unwrap();
+        let first = image2ascii_core::convert(&src, &atlas, &options(Mode::Shape)).unwrap();
         for _ in 0..3 {
-            assert_eq!(ascii_core::convert(&src, &atlas, &options(Mode::Shape)).unwrap(), first);
+            assert_eq!(image2ascii_core::convert(&src, &atlas, &options(Mode::Shape)).unwrap(), first);
         }
     }
 }

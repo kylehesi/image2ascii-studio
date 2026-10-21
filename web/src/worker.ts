@@ -3,7 +3,7 @@
 // never builds a backlog. The quality score is computed only when no newer
 // request is waiting.
 
-import init, { Engine } from './wasm/ascii_wasm.js';
+import init, { Engine } from './wasm/image2ascii_wasm.js';
 import type { ConvertOptions, ExportOptions, Geometry, Request, Response } from './protocol';
 
 /** Matches the core's working-size cap; larger images are resized while decoding. */

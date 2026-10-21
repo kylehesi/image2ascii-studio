@@ -8,9 +8,12 @@ default-members = ["crates/core", "crates/cli"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/kylehesi/image2ascii-studio"
+homepage = "https://kylehesi.github.io/image2ascii-studio/"
 
 [workspace.dependencies]
-ascii-core = { path = "crates/core" }
+image2ascii-core = { path = "crates/core" }
 
 [profile.release]
 lto = "thin"
