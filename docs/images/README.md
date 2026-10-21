@@ -1,6 +1,6 @@
 # README images
 
-The project README shows three images from this folder:
+The project README has a slot for each image below. Add the file here, then uncomment its `IMAGE SLOT` block in the README.
 
 | File | What it shows | Suggested size |
 |---|---|---|

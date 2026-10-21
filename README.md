@@ -15,8 +15,9 @@ you can drop straight into a GitHub profile README.
 [Download the CLI](https://github.com/kylehesi/image2ascii-studio/releases/latest) &nbsp;·&nbsp;
 [How it works](#how-it-works)
 
-<!-- Side-by-side comparison: the original photo next to its ASCII version. -->
+<!-- IMAGE SLOT: docs/images/hero.png — a photo side by side with its ASCII version.
 <img src="docs/images/hero.png" alt="A photo next to its ASCII art version" width="860">
+-->
 
 </div>
 
@@ -30,21 +31,23 @@ you can drop straight into a GitHub profile README.
 - **Fast and private.** Multi-threaded native CLI; the web app runs the same Rust engine as WebAssembly, entirely on your device. Nothing is uploaded.
 - **Quality you can measure.** Built-in SSIM scoring, golden tests and quality floors keep conversions from regressing.
 
-<!-- Animated reveal made with this tool: an SVG export, embedded as an image. -->
+<!-- IMAGE SLOT: docs/images/demo.svg — an animated reveal exported from the app.
 <p align="center">
   <img src="docs/images/demo.svg" alt="Animated ASCII reveal" width="600">
 </p>
+-->
 
 ## Web app
 
 **[kylehesi.github.io/image2ascii-studio](https://kylehesi.github.io/image2ascii-studio/)** — no installation.
 
-Drop, paste (<kbd>Ctrl</kbd>+<kbd>V</kbd>) or choose an image and tune it live: width, matching mode, character set, background, dithering and tone. Preview the reveal animation, then export TXT, SVG or PNG — or copy the text. Settings are remembered between visits.
+Open it, drop, paste (<kbd>Ctrl</kbd>+<kbd>V</kbd>) or choose an image — or try the built-in sample — and tune it live: width, matching mode, character set, background, dithering and tone. Preview the reveal animation, then export TXT, SVG or PNG — or copy the text. Settings are remembered between visits.
 
-<!-- Screenshot of the web app with an image loaded. -->
+<!-- IMAGE SLOT: docs/images/web-app.png — the web app with an image loaded.
 <p align="center">
   <img src="docs/images/web-app.png" alt="The web app" width="860">
 </p>
+-->
 
 ## Command line
 

@@ -691,6 +691,7 @@ async function play() {
 
 async function loadFile(file: Blob, name: string) {
   sourceName = name.replace(/\.[^.]+$/, '') || 'ascii';
+  setLandingBusy(true);
   try {
     const r = await call({ type: 'load', file });
     if (r.type !== 'loaded') return;
@@ -700,6 +701,7 @@ async function loadFile(file: Blob, name: string) {
     $('source-info').textContent = `${name} — ${r.originalWidth}×${r.originalHeight}`;
     requestConvert();
   } catch (err) {
+    setLandingBusy(false);
     toast(`Couldn't open the image: ${(err as Error).message}`, true);
   }
 }
@@ -715,20 +717,25 @@ function imageFrom(list: DataTransferItemList | FileList | null | undefined): Fi
   return undefined;
 }
 
-function wireInput() {
-  const input = $<HTMLInputElement>('file');
-  const drop = $<HTMLLabelElement>('drop');
+/** A file input inside a focusable drop label: click, Enter/Space or choose. */
+function wirePicker(inputId: string, dropId: string) {
+  const input = $<HTMLInputElement>(inputId);
   input.addEventListener('change', () => {
     const file = input.files?.[0];
     if (file) void loadFile(file, file.name);
     input.value = '';
   });
-  drop.addEventListener('keydown', (e) => {
+  $(dropId).addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       input.click();
     }
   });
+}
+
+function wireInput() {
+  wirePicker('landing-file', 'landing-drop');
+  wirePicker('file', 'drop');
   let depth = 0;
   window.addEventListener('dragenter', (e) => {
     e.preventDefault();
@@ -754,10 +761,16 @@ function wireInput() {
     const file = imageFrom(e.clipboardData?.items);
     if (file) void loadFile(file, file.name || 'pasted.png');
   });
-  $('sample').addEventListener('click', async () => {
+  $('landing-sample').addEventListener('click', async () => {
     const blob = await sampleImage();
     void loadFile(blob, 'sample.png');
   });
+}
+
+/** Shows progress on the landing screen while the first image opens. */
+function setLandingBusy(busy: boolean) {
+  $('landing-drop').classList.toggle('busy', busy);
+  $('landing-label').textContent = busy ? 'Opening…' : 'Drop an image here';
 }
 
 /** A procedurally drawn test scene: smooth shading, hard edges, fine lines. */
@@ -871,6 +884,9 @@ worker.onmessage = (e: MessageEvent<Response>) => {
     result = msg;
     geometry = msg.geometry;
     score = undefined;
+    // Leave the landing screen first so the preview measures a visible viewport.
+    document.body.classList.add('has-image');
+    setLandingBusy(false);
     showResult();
   } else if (msg.type === 'score') {
     score = msg;
