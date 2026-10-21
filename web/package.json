@@ -1,7 +1,7 @@
 {
   "name": "image2ascii-studio-web",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "description": "Image to ASCII art in the browser: live preview, animated SVG and PNG export",
   "type": "module",
