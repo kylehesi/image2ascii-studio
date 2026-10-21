@@ -128,7 +128,7 @@ pub fn render_svg(art: &AsciiArt, face: &Typeface, opts: &SvgOptions, timeline: 
                     if ch == ' ' {
                         continue;
                     }
-                    if let Some(id) = define(ch, style.px, &mut ids) {
+                    if let Some(id) = define(ch, lay.font_px, &mut ids) {
                         let _ = write!(body, r##"<use href="#{id}" x="{}"/>"##, num(c as f32 * lay.cell_w));
                     }
                 }
@@ -164,7 +164,7 @@ pub fn render_svg(art: &AsciiArt, face: &Typeface, opts: &SvgOptions, timeline: 
         let _ = write!(
             s,
             r#" font-family="{FONTS}" font-size="{}" style="font-variant-ligatures:none;font-feature-settings:'liga' 0,'calt' 0""#,
-            num(style.px)
+            num(lay.font_px)
         );
     }
     if clip.is_some() {

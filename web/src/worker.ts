@@ -4,7 +4,7 @@
 // request is waiting.
 
 import init, { Engine } from './wasm/ascii_wasm.js';
-import type { ConvertOptions, Request, Response } from './protocol';
+import type { ConvertOptions, ExportOptions, Geometry, Request, Response } from './protocol';
 
 /** Matches the core's working-size cap; larger images are resized while decoding. */
 const MAX_SIDE = 4096;
@@ -18,15 +18,10 @@ let running = false;
 const ready = (async () => {
   await init();
   engine = new Engine();
-  const [advance, lineHeight] = engine.cellSize(100);
   post({
     type: 'ready',
     defaults: Engine.defaults() as ConvertOptions,
-    cell: [advance / 100, lineHeight / 100],
-    palettes: {
-      dark: Engine.palette('dark') as [string, string],
-      light: Engine.palette('light') as [string, string],
-    },
+    metrics: Array.from(engine.fontMetrics()) as [number, number, number, number],
   });
 })();
 
@@ -62,13 +57,15 @@ async function handle(req: Request) {
       const start = performance.now();
       await load(req.file);
       const [width, height] = engine.sourceSize() ?? [0, 0];
-      post({ type: 'loaded', id: req.id, width, height, ms: performance.now() - start });
+      const [originalWidth, originalHeight] = engine.originalSize() ?? [width, height];
+      post({ type: 'loaded', id: req.id, width, height, originalWidth, originalHeight, ms: performance.now() - start });
       break;
     }
     case 'convert': {
       const start = performance.now();
       const result = engine.convert(req.options) as { text: string; cols: number; rows: number };
-      post({ type: 'converted', id: req.id, ...result, ms: performance.now() - start });
+      const ms = performance.now() - start;
+      post({ type: 'converted', id: req.id, ...result, ms, geometry: geometry(req.export) });
       await yieldToMessages();
       if (!queue.some((r) => r.type === 'convert')) {
         const score = engine.score() as { ssim: number; toneError: number };
@@ -76,11 +73,16 @@ async function handle(req: Request) {
       }
       break;
     }
+    case 'geometry': {
+      post({ type: 'geometry', id: req.id, geometry: geometry(req.export) });
+      break;
+    }
     case 'export': {
+      const options = engineExport(req.options).options;
       if (req.format === 'svg') {
-        post({ type: 'exported', id: req.id, format: 'svg', data: engine.svg(req.options) });
+        post({ type: 'exported', id: req.id, format: 'svg', data: engine.svg(options) });
       } else {
-        const png = engine.png(req.options);
+        const png = engine.png(options);
         post({ type: 'exported', id: req.id, format: 'png', data: png }, [png.buffer]);
       }
       break;
@@ -94,13 +96,40 @@ async function handle(req: Request) {
 }
 
 /**
+ * Resolves the UI's size choice (original size or a preset, times the scale,
+ * capped to the canvas limits) into the engine's exact width and height.
+ */
+function engineExport(opts: ExportOptions) {
+  const [w, h] = opts.size ?? Array.from(engine.originalSize() ?? [512, 512]);
+  const [width, height, capped] = Engine.fitCanvas(w, h, opts.scale);
+  const options = {
+    width,
+    height,
+    frame: opts.frame,
+    title: opts.title,
+    animate: opts.animate,
+    revealMs: opts.revealMs,
+    loopPauseMs: opts.loopPauseMs,
+    svgText: opts.svgText,
+  };
+  return { options, capped: capped === 1 };
+}
+
+function geometry(opts: ExportOptions): Geometry {
+  const { options, capped } = engineExport(opts);
+  return { ...(engine.geometry(options) as Omit<Geometry, 'capped'>), capped };
+}
+
+/**
  * Decodes with the browser where possible (any format it supports, EXIF
  * orientation applied), falling back to the engine's own decoder.
  */
 async function load(file: Blob) {
   let bitmap: ImageBitmap | undefined;
+  let original: [number, number] | undefined;
   try {
     bitmap = await createImageBitmap(file);
+    original = [bitmap.width, bitmap.height];
     const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
     if (scale < 1) {
       const resized = await createImageBitmap(file, {
@@ -125,5 +154,5 @@ async function load(file: Blob) {
   ctx.drawImage(bitmap, 0, 0);
   bitmap.close();
   const pixels = ctx.getImageData(0, 0, width, height).data;
-  engine.loadRgba(width, height, new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength));
+  engine.loadRgba(width, height, new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength), original?.[0], original?.[1]);
 }

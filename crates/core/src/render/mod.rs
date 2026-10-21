@@ -59,6 +59,11 @@ impl Typeface {
         self.metrics(px).map(|m| (m.advance, m.line_height))
     }
 
+    /// (ascent, descent) at font size `px`; descent is negative.
+    pub fn vertical_metrics(&self, px: f32) -> Result<(f32, f32)> {
+        self.metrics(px).map(|m| (m.ascent, m.descent))
+    }
+
     pub(crate) fn metrics(&self, px: f32) -> Result<CellMetrics> {
         match &self.inner {
             Inner::Font { raster, .. } => CellMetrics::of(raster, px),
@@ -184,10 +189,38 @@ pub struct Frame {
     pub title: String,
 }
 
+/// Smallest and largest exported canvas side, and the most pixels in total
+/// (8K UHD) — enough for any screen, small enough for browser memory.
+pub const MIN_CANVAS_SIDE: u32 = 32;
+pub const MAX_CANVAS_SIDE: u32 = 8192;
+pub const MAX_CANVAS_PIXELS: u64 = 7680 * 4320;
+
+/// How big the exported image is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Canvas {
+    /// Glyphs at this font size (px); the image grows to fit the art.
+    FontSize(f32),
+    /// Exactly `width`×`height` pixels. The art is scaled to fit inside and
+    /// centred; space it doesn't fill (a different aspect ratio) stays background.
+    Fixed { width: u32, height: u32 },
+}
+
+impl Canvas {
+    /// `Fixed` at `width`×`height` scaled by `scale`, shrunk proportionally if
+    /// that would exceed the canvas limits. The bool says whether it was shrunk.
+    pub fn fixed_scaled(width: u32, height: u32, scale: f32) -> (Self, bool) {
+        let (w, h) = (width as f64 * scale as f64, height as f64 * scale as f64);
+        let side = (MAX_CANVAS_SIDE as f64 / w.max(h)).min(1.0);
+        let area = (MAX_CANVAS_PIXELS as f64 / (w * h)).sqrt().min(1.0);
+        let shrink = side.min(area);
+        let fit = |v: f64| ((v * shrink).floor() as u32).max(MIN_CANVAS_SIDE);
+        (Self::Fixed { width: fit(w), height: fit(h) }, shrink < 1.0)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Style {
-    /// Font size in pixels.
-    pub px: f32,
+    pub canvas: Canvas,
     pub fg: Rgb,
     pub bg: Rgb,
     pub frame: Option<Frame>,
@@ -200,14 +233,26 @@ impl Style {
             Background::Dark => (Rgb(0xc9, 0xd1, 0xd9), Rgb(0x0d, 0x11, 0x17)),
             Background::Light => (Rgb(0x1f, 0x23, 0x28), Rgb(0xff, 0xff, 0xff)),
         };
-        Self { px: 16.0, fg, bg, frame: None }
+        Self { canvas: Canvas::FontSize(16.0), fg, bg, frame: None }
     }
 
     fn validate(&self) -> Result<()> {
-        if !(self.px.is_finite() && (4.0..=256.0).contains(&self.px)) {
-            return Err(Error::InvalidOption(format!("font size must be 4..=256 px, got {}", self.px)));
+        let bad = |msg: String| Err(Error::InvalidOption(msg));
+        match self.canvas {
+            Canvas::FontSize(px) if !(px.is_finite() && (4.0..=256.0).contains(&px)) => {
+                bad(format!("font size must be 4..=256 px, got {px}"))
+            }
+            Canvas::Fixed { width, height }
+                if !(MIN_CANVAS_SIDE..=MAX_CANVAS_SIDE).contains(&width)
+                    || !(MIN_CANVAS_SIDE..=MAX_CANVAS_SIDE).contains(&height) =>
+            {
+                bad(format!("canvas sides must be {MIN_CANVAS_SIDE}..={MAX_CANVAS_SIDE} px, got {width}×{height}"))
+            }
+            Canvas::Fixed { width, height } if width as u64 * height as u64 > MAX_CANVAS_PIXELS => {
+                bad(format!("canvas {width}×{height} exceeds {MAX_CANVAS_PIXELS} pixels"))
+            }
+            _ => Ok(()),
         }
-        Ok(())
     }
 
     /// Frame border and title colours: the foreground faded towards the background.
@@ -219,11 +264,14 @@ impl Style {
 
 const DOTS: [Rgb; 3] = [Rgb(0xff, 0x5f, 0x57), Rgb(0xfe, 0xbc, 0x2e), Rgb(0x28, 0xc8, 0x40)];
 
-/// Where everything goes, in pixels. Shared by SVG (exact) and PNG (snapped
-/// to whole pixels so glyph cells stay crisp).
-pub(crate) struct Layout {
+/// Where everything goes, in pixels: the geometry every exporter (and the
+/// web preview) draws with, so they all agree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Layout {
     pub width: f32,
     pub height: f32,
+    /// Font size the glyphs are drawn at.
+    pub font_px: f32,
     /// Top-left of the character grid.
     pub origin: (f32, f32),
     pub cell_w: f32,
@@ -233,7 +281,9 @@ pub(crate) struct Layout {
     pub frame: Option<FrameLayout>,
 }
 
-pub(crate) struct FrameLayout {
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameLayout {
+    pub bar_height: f32,
     pub radius: f32,
     pub border: Rgb,
     pub dots: [(f32, f32, Rgb); 3],
@@ -246,25 +296,69 @@ pub(crate) struct FrameLayout {
     pub title_centre_x: f32,
 }
 
+/// Title-bar height per pixel of font size in `Canvas::FontSize` mode; the
+/// rest of the chrome is proportioned from the bar so both modes look alike.
+const BAR_PER_PX: f32 = 2.25;
+
+/// The layout `art` gets with `style` — what the SVG export uses.
+pub fn layout(art: &AsciiArt, face: &Typeface, style: &Style) -> Result<Layout> {
+    Layout::new(art, face, style, false)
+}
+
 impl Layout {
-    pub fn new(art: &AsciiArt, face: &Typeface, style: &Style, snap: bool) -> Result<Self> {
+    /// `snap` rounds margins and the grid origin to whole pixels (PNG), and in
+    /// `FontSize` mode the cells too, so glyphs land crisply on the pixel grid.
+    pub(crate) fn new(art: &AsciiArt, face: &Typeface, style: &Style, snap: bool) -> Result<Self> {
         style.validate()?;
-        let m = face.metrics(style.px)?;
         let round = |v: f32| if snap { v.round().max(1.0) } else { v };
-        let (cell_w, cell_h, baseline) = (round(m.advance), round(m.line_height), round(m.baseline()));
-        let pad = round(style.px);
-        let bar = if style.frame.is_some() { round(style.px * 2.25) } else { 0.0 };
-        let width = pad * 2.0 + cell_w * art.cols() as f32;
-        let height = bar + pad * 2.0 + cell_h * art.rows() as f32 - if bar > 0.0 { pad * 0.5 } else { 0.0 };
-        let origin = (pad, if bar > 0.0 { bar + pad * 0.5 } else { pad });
+        let framed = style.frame.is_some();
+        let (cols, rows) = (art.cols() as f32, art.rows() as f32);
+
+        let (width, height, font_px, m, baseline, origin, bar) = match style.canvas {
+            Canvas::FontSize(px) => {
+                let m = face.metrics(px)?;
+                let baseline = round(m.baseline());
+                let (cell_w, cell_h) = (round(m.advance), round(m.line_height));
+                let pad = round(px);
+                let bar = if framed { round(px * BAR_PER_PX) } else { 0.0 };
+                let width = round(pad * 2.0 + cell_w * cols);
+                let height = round(bar + pad * 2.0 + cell_h * rows - if framed { pad * 0.5 } else { 0.0 });
+                let origin = (pad, if framed { bar + pad * 0.5 } else { pad });
+                let m = CellMetrics { advance: cell_w, line_height: cell_h, ..m };
+                (width, height, px, m, baseline, origin, bar)
+            }
+            Canvas::Fixed { width, height } => {
+                let (w, h) = (width as f32, height as f32);
+                // Margins scale with the canvas: 3% of the short side, bar 7%.
+                let unit = w.min(h) / 100.0;
+                let pad = round((unit * 3.0).max(4.0));
+                let bar = if framed { round((unit * 7.0).clamp(16.0, 72.0)) } else { 0.0 };
+                let top = if framed { bar + pad * 0.5 } else { pad };
+                let (box_w, box_h) = (w - pad * 2.0, h - top - pad);
+                // Metrics are linear in size: measure once, then fit.
+                let unit_m = face.metrics(100.0)?;
+                let px = 100.0
+                    * (box_w / (cols * unit_m.advance)).min(box_h / (rows * unit_m.line_height));
+                if !(box_w > 0.0 && box_h > 0.0 && px > 0.0) {
+                    return Err(Error::InvalidOption(format!("canvas {width}×{height} is too small for the frame")));
+                }
+                let m = face.metrics(px)?;
+                let (grid_w, grid_h) = (m.advance * cols, m.line_height * rows);
+                let origin = (pad + (box_w - grid_w) / 2.0, top + (box_h - grid_h) / 2.0);
+                let origin = if snap { (origin.0.round(), origin.1.round()) } else { origin };
+                (w, h, px, m, m.baseline(), origin, bar)
+            }
+        };
 
         let frame = style.frame.as_ref().map(|f| {
-            let dot_radius = style.px * 0.4;
-            let dot = |i: usize| (pad + dot_radius + i as f32 * dot_radius * 3.2, bar / 2.0, DOTS[i]);
-            let title_px = style.px * 0.85;
+            let dot_radius = bar * 0.4 / BAR_PER_PX;
+            let inset = bar / BAR_PER_PX;
+            let dot = |i: usize| (inset + dot_radius + i as f32 * dot_radius * 3.2, bar / 2.0, DOTS[i]);
+            let title_px = bar * 0.85 / BAR_PER_PX;
             let tm = face.metrics(title_px).unwrap_or(m);
             FrameLayout {
-                radius: style.px * 0.6,
+                bar_height: bar,
+                radius: bar * 0.6 / BAR_PER_PX,
                 border: style.muted(0.18),
                 dots: [dot(0), dot(1), dot(2)],
                 dot_radius,
@@ -275,7 +369,7 @@ impl Layout {
                 title_centre_x: width / 2.0,
             }
         });
-        Ok(Self { width: round(width), height: round(height), origin, cell_w, cell_h, baseline, frame })
+        Ok(Self { width, height, font_px, origin, cell_w: m.advance, cell_h: m.line_height, baseline, frame })
     }
 }
 

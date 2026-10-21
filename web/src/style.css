@@ -242,51 +242,39 @@ select {
   min-height: 0;
 }
 
-.window {
-  border: 1px solid var(--frame-border, #30363d);
-  border-radius: 10px;
-  background: var(--art-bg, #0d1117);
-  color: var(--art-fg, #c9d1d9);
+/* Occupies the scaled size of the canvas so the viewport can centre and scroll it. */
+.sizer {
+  position: relative;
+}
+
+/* The export canvas in its own pixel units; positions come from the renderer's layout. */
+.canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: hidden;
+  transform-origin: 0 0;
   box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
 }
 
-.titlebar {
-  position: relative;
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  height: 36px;
-  padding: 0 14px;
-}
-
-.dot {
-  width: 12px;
-  height: 12px;
+.canvas .dot {
+  position: absolute;
   border-radius: 50%;
-  background: #ff5f57;
-}
-
-.dot:nth-child(2) {
-  background: #febc2e;
-}
-
-.dot:nth-child(3) {
-  background: #28c840;
 }
 
 .title {
   position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  color: var(--frame-title, #8b949e);
-  font: 13px 'JetBrains Mono', monospace;
+  transform: translateX(-50%);
+  white-space: pre;
+  font-family: 'JetBrains Mono', monospace;
+  font-variant-ligatures: none;
   pointer-events: none;
 }
 
 #art {
+  position: absolute;
   margin: 0;
-  padding: 4px 16px 16px;
+  padding: 0;
   font-family: 'JetBrains Mono', monospace;
   /* Ligatures (->, ==, !=) would merge cells and break the art. */
   font-variant-ligatures: none;
@@ -294,6 +282,46 @@ select {
   white-space: pre;
   letter-spacing: 0;
   user-select: text;
+}
+
+.chips {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.chip {
+  display: grid;
+  gap: 1px;
+  text-align: left;
+  padding: 6px 8px;
+}
+
+.chip strong {
+  font-weight: 600;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.chip[aria-pressed='true'] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.size-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 6px;
+  align-items: center;
+}
+
+.size-info {
+  margin: -4px 0 12px;
 }
 
 .empty {

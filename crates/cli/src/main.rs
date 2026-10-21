@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use ascii_core::render::{self, Frame, Rgb, Style, SvgGlyphs, SvgOptions, Typeface};
+use ascii_core::render::{self, Canvas, Frame, Rgb, Style, SvgGlyphs, SvgOptions, Typeface};
 use ascii_core::{
     AsciiArt, Background, GlyphAtlas, Mode, Options, Preset, RevealTimeline, SourceImage, ToneMapping, quality,
 };
@@ -117,9 +117,19 @@ struct Args {
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=240))]
     fps: u32,
 
-    /// SVG/PNG: font size in pixels.
-    #[arg(long, default_value_t = 16.0)]
-    font_size: f32,
+    /// SVG/PNG: image size, `original` (the input's size) or WIDTHxHEIGHT, e.g. 1080x1080.
+    /// The art is scaled to fit and centred; unused space stays background.
+    #[arg(long, default_value = "original", value_parser = parse_size)]
+    size: SizeArg,
+
+    /// SVG/PNG: multiply --size, e.g. 2 for a double-size image.
+    #[arg(long, default_value_t = 1.0)]
+    scale: f32,
+
+    /// SVG/PNG: draw glyphs at this font size (px) and size the image to the
+    /// art instead of using --size.
+    #[arg(long, conflicts_with_all = ["size", "scale"])]
+    font_size: Option<f32>,
 
     /// SVG/PNG: no window frame (title bar with dots).
     #[arg(long)]
@@ -265,7 +275,7 @@ fn main() -> Result<()> {
                     Some(f) => f,
                     None => face.insert(Typeface::from_bytes(&font)?),
                 };
-                let style = style(&args, opts.background)?;
+                let style = style(&args, opts.background, src.original_size())?;
                 if *format == Format::Png {
                     render::render_png(&art, face, &style)?
                 } else {
@@ -292,9 +302,50 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn style(args: &Args, background: Background) -> Result<Style> {
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SizeArg {
+    Original,
+    Fixed(u32, u32),
+}
+
+fn parse_size(s: &str) -> Result<SizeArg, String> {
+    if s.eq_ignore_ascii_case("original") {
+        return Ok(SizeArg::Original);
+    }
+    let parts: Vec<&str> = s.split(['x', 'X', '×', '*']).collect();
+    match parts.as_slice() {
+        [w, h] => match (w.trim().parse(), h.trim().parse()) {
+            (Ok(w), Ok(h)) => Ok(SizeArg::Fixed(w, h)),
+            _ => Err(format!("{s:?} is not WIDTHxHEIGHT")),
+        },
+        _ => Err(format!("{s:?} is not `original` or WIDTHxHEIGHT")),
+    }
+}
+
+/// The export canvas: an explicit font size, or the requested size (the
+/// input's original size by default) times --scale, capped to the limits.
+fn canvas(args: &Args, original: (usize, usize)) -> Result<Canvas> {
+    if let Some(px) = args.font_size {
+        return Ok(Canvas::FontSize(px));
+    }
+    if !(args.scale.is_finite() && args.scale > 0.0 && args.scale <= 16.0) {
+        bail!("--scale must be in (0, 16], got {}", args.scale);
+    }
+    let (w, h) = match args.size {
+        SizeArg::Original => (original.0 as u32, original.1 as u32),
+        SizeArg::Fixed(w, h) => (w, h),
+    };
+    let (canvas, capped) = Canvas::fixed_scaled(w, h, args.scale);
+    if capped {
+        let Canvas::Fixed { width, height } = canvas else { unreachable!() };
+        eprintln!("note: image size capped to {width}×{height}");
+    }
+    Ok(canvas)
+}
+
+fn style(args: &Args, background: Background, original: (usize, usize)) -> Result<Style> {
     let mut style = Style::for_background(background);
-    style.px = args.font_size;
+    style.canvas = canvas(args, original)?;
     if let Some(fg) = &args.fg {
         style.fg = Rgb::parse(fg)?;
     }
@@ -374,6 +425,28 @@ mod tests {
         assert_eq!(format_of(Path::new("a.png")).unwrap(), Format::Png);
         assert!(format_of(Path::new("a.jpg")).is_err());
         assert!(format_of(Path::new("noext")).is_err());
+    }
+
+    #[test]
+    fn sizes_parse() {
+        assert_eq!(parse_size("original").unwrap(), SizeArg::Original);
+        assert_eq!(parse_size("1920x1080").unwrap(), SizeArg::Fixed(1920, 1080));
+        assert_eq!(parse_size("500×500").unwrap(), SizeArg::Fixed(500, 500));
+        assert!(parse_size("500").is_err());
+        assert!(parse_size("axb").is_err());
+    }
+
+    #[test]
+    fn default_canvas_is_the_original_size() {
+        let args = Args::try_parse_from(["img2ascii", "x.png"]).unwrap();
+        assert_eq!(canvas(&args, (430, 383)).unwrap(), Canvas::Fixed { width: 430, height: 383 });
+        let args = Args::try_parse_from(["img2ascii", "x.png", "--scale", "2"]).unwrap();
+        assert_eq!(canvas(&args, (430, 383)).unwrap(), Canvas::Fixed { width: 860, height: 766 });
+        let args = Args::try_parse_from(["img2ascii", "x.png", "--size", "500x500"]).unwrap();
+        assert_eq!(canvas(&args, (50, 100)).unwrap(), Canvas::Fixed { width: 500, height: 500 });
+        let args = Args::try_parse_from(["img2ascii", "x.png", "--font-size", "12"]).unwrap();
+        assert_eq!(canvas(&args, (50, 100)).unwrap(), Canvas::FontSize(12.0));
+        assert!(Args::try_parse_from(["img2ascii", "x.png", "--font-size", "12", "--size", "9x9"]).is_err());
     }
 
     #[test]

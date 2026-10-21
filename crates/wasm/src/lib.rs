@@ -5,7 +5,7 @@
 
 use std::fmt::Display;
 
-use ascii_core::render::{self, Frame, Rgb, Style, SvgGlyphs, SvgOptions, Typeface};
+use ascii_core::render::{self, Canvas, Frame, Rgb, Style, SvgGlyphs, SvgOptions, Typeface};
 use ascii_core::{
     AsciiArt, Background, GlyphAtlas, Mode, Options, Prepared, Preset, RevealTimeline, SourceImage, ToneMapping, fonts,
     quality,
@@ -117,6 +117,10 @@ impl ConvertOptions {
 #[derive(Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 struct ExportOptions {
+    /// Exact canvas size; both must be set. Otherwise the canvas follows the
+    /// art at `font_size`.
+    width: Option<u32>,
+    height: Option<u32>,
     font_size: Option<f32>,
     frame: Option<bool>,
     title: Option<String>,
@@ -131,9 +135,10 @@ struct ExportOptions {
 impl ExportOptions {
     fn style(&self, background: Background) -> Result<Style, JsError> {
         let mut style = Style::for_background(background);
-        if let Some(px) = self.font_size {
-            style.px = px;
-        }
+        style.canvas = match (self.width, self.height) {
+            (Some(width), Some(height)) => Canvas::Fixed { width, height },
+            _ => Canvas::FontSize(self.font_size.unwrap_or(16.0)),
+        };
         if let Some(fg) = &self.fg {
             style.fg = Rgb::parse(fg).map_err(err)?;
         }
@@ -171,6 +176,9 @@ struct Last {
 pub struct Engine {
     face: Typeface,
     source: Option<SourceImage>,
+    /// Size of the image as the user gave it, when the browser downscaled it
+    /// before handing over the pixels.
+    original: Option<(u32, u32)>,
     /// Tone-mapped source, reused while only grid/matching options change.
     prepared: Option<Prepared>,
     atlases: Vec<(String, GlyphAtlas)>,
@@ -221,18 +229,118 @@ impl Engine {
         Ok(Engine {
             face: Typeface::from_bytes(fonts::DEFAULT).map_err(err)?,
             source: None,
+            original: None,
             prepared: None,
             atlases: Vec::new(),
             last: None,
         })
     }
 
-    /// Straight sRGB RGBA pixels, e.g. from `ImageData`.
+    /// Straight sRGB RGBA pixels, e.g. from `ImageData`. Pass the original
+    /// size when the pixels were downscaled from a larger image.
     #[wasm_bindgen(js_name = loadRgba)]
-    pub fn load_rgba(&mut self, width: u32, height: u32, rgba: &[u8]) -> Result<(), JsError> {
+    pub fn load_rgba(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        original_width: Option<u32>,
+        original_height: Option<u32>,
+    ) -> Result<(), JsError> {
         let source = SourceImage::from_rgba8(width as usize, height as usize, rgba).map_err(err)?;
         self.set_source(source);
+        self.original = original_width.zip(original_height);
         Ok(())
+    }
+
+    /// Size of the loaded image as given `[width, height]` — the default export size.
+    #[wasm_bindgen(js_name = originalSize)]
+    pub fn original_size(&self) -> Option<Vec<u32>> {
+        let source = self.source.as_ref()?;
+        let (w, h) = self.original.unwrap_or_else(|| {
+            let (w, h) = source.original_size();
+            (w as u32, h as u32)
+        });
+        Some(vec![w, h])
+    }
+
+    /// `[width, height, capped]`: `width`×`height` times `scale`, shrunk to the
+    /// canvas limits if needed (`capped` is 1 then).
+    #[wasm_bindgen(js_name = fitCanvas)]
+    pub fn fit_canvas(width: u32, height: u32, scale: f32) -> Vec<u32> {
+        match Canvas::fixed_scaled(width, height, scale) {
+            (Canvas::Fixed { width, height }, capped) => vec![width, height, capped as u32],
+            (Canvas::FontSize(_), _) => unreachable!("fixed_scaled returns Fixed"),
+        }
+    }
+
+    /// Export geometry of the last result — what the preview draws so it
+    /// matches the SVG/PNG exactly.
+    pub fn geometry(&self, export: JsValue) -> Result<JsValue, JsError> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Frame {
+            bar_height: f32,
+            radius: f32,
+            dot_radius: f32,
+            dots: Vec<[f32; 2]>,
+            dot_colors: Vec<String>,
+            title_px: f32,
+            title_baseline: f32,
+            title_centre_x: f32,
+            border: String,
+            title_color: String,
+        }
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Geometry {
+            width: f32,
+            height: f32,
+            font_px: f32,
+            origin_x: f32,
+            origin_y: f32,
+            cell_w: f32,
+            cell_h: f32,
+            fg: String,
+            bg: String,
+            frame: Option<Frame>,
+        }
+        let export: ExportOptions = from_js(export)?;
+        let last = self.last()?;
+        let style = export.style(last.options.background)?;
+        let lay = render::layout(&last.art, &self.face, &style).map_err(err)?;
+        let geometry = Geometry {
+            width: lay.width,
+            height: lay.height,
+            font_px: lay.font_px,
+            origin_x: lay.origin.0,
+            origin_y: lay.origin.1,
+            cell_w: lay.cell_w,
+            cell_h: lay.cell_h,
+            fg: style.fg.hex(),
+            bg: style.bg.hex(),
+            frame: lay.frame.map(|f| Frame {
+                bar_height: f.bar_height,
+                radius: f.radius,
+                dot_radius: f.dot_radius,
+                dots: f.dots.iter().map(|d| [d.0, d.1]).collect(),
+                dot_colors: f.dots.iter().map(|d| d.2.hex()).collect(),
+                title_px: f.title_px,
+                title_baseline: f.title_baseline,
+                title_centre_x: f.title_centre_x,
+                border: f.border.hex(),
+                title_color: f.title_color.hex(),
+            }),
+        };
+        serde_wasm_bindgen::to_value(&geometry).map_err(err)
+    }
+
+    /// Font metrics per pixel of size: `[advance, lineHeight, ascent, descent]`.
+    #[wasm_bindgen(js_name = fontMetrics)]
+    pub fn font_metrics(&self) -> Result<Vec<f32>, JsError> {
+        let (advance, line) = self.face.cell_size(100.0).map_err(err)?;
+        let (ascent, descent) = self.face.vertical_metrics(100.0).map_err(err)?;
+        Ok(vec![advance / 100.0, line / 100.0, ascent / 100.0, descent / 100.0])
     }
 
     /// An encoded file (PNG, JPEG, WebP, GIF, BMP, TIFF) — the fallback when
@@ -304,14 +412,6 @@ impl Engine {
         let export: ExportOptions = from_js(export)?;
         let last = self.last()?;
         render::render_png(&last.art, &self.face, &export.style(last.options.background)?).map_err(err)
-    }
-
-    /// `[advance, lineHeight]` of the bundled font at `px`, for laying out
-    /// a text preview on exactly the calibrated grid.
-    #[wasm_bindgen(js_name = cellSize)]
-    pub fn cell_size(&self, px: f32) -> Result<Vec<f32>, JsError> {
-        let (w, h) = self.face.cell_size(px).map_err(err)?;
-        Ok(vec![w, h])
     }
 
     /// The core's default conversion options, in the shape `convert` takes,

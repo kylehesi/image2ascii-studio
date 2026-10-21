@@ -38,7 +38,9 @@ cargo run --release -p img2ascii -- --help
 
 ### SVG and PNG
 
-Both draw the art in a window frame (dots + title, default `<input>.txt`) with GitHub's colours for the chosen background. The SVG plays the same typewriter reveal as `--reveal` and works as an `<img>` in a GitHub README (no scripts or external files):
+Both draw the art in a window frame (dots + title, default `<input>.txt`) with GitHub's colours for the chosen background. The SVG plays the same typewriter reveal as `--reveal` and works as an `<img>` in a GitHub README (no scripts or external files).
+
+**Size.** By default the image is exactly as large as the input image. Pick another size with `--size WIDTHxHEIGHT` and/or enlarge with `--scale`; the art is scaled to fit inside and centred, and space a different aspect ratio leaves free stays background (a 50×100 photo at `--size 500x500` gives a 250×500 art area in a 500×500 image). The width setting (`-c`) still decides the detail — the font size follows from it and the canvas. The web app offers the same as one-click presets (Original, 512², 1080², 1080×1350, 1080×1920, 720p, 1080p, 4K, GitHub social preview, link preview, custom) with a 1–4× scale. Canvases are capped at 8192 px per side and 8K UHD in total; larger requests shrink proportionally.
 
 ```md
 <img src="art.svg" width="600">
@@ -46,7 +48,9 @@ Both draw the art in a window frame (dots + title, default `<input>.txt`) with G
 
 | Flag | Effect |
 |---|---|
-| `--font-size 16` | glyph size in px |
+| `--size original` / `--size 1080x1080` | image size (default: the input's size) |
+| `--scale 2` | multiply the size |
+| `--font-size 16` | instead of a size: glyphs at this px, image grows with the art |
 | `--no-frame`, `--title "me.txt"` | window chrome |
 | `--fg "#c9d1d9" --bg "#0d1117"` | colours |
 | `--reveal-ms 3000` | reveal length (terminal and SVG) |

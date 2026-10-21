@@ -1,14 +1,24 @@
-//! PNG export. Compositing happens in linear light with premultiplied alpha:
-//! glyph coverage is an area fraction, so blending it in sRGB would make thin
-//! strokes too dark and undo the tone calibration.
+//! PNG export. Compositing happens in linear light: glyph coverage is an area
+//! fraction, so blending it in sRGB would make thin strokes too dark and undo
+//! the tone calibration. Pixels are stored as 8-bit sRGB (4 bytes each, so an
+//! 8K canvas fits comfortably in browser memory) and converted through lookup
+//! tables around each blend.
 
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder, RgbaImage};
 
-use super::{Layout, Rgb, Style, Typeface};
+use super::{GlyphRaster, Layout, Rgb, Style, Typeface};
 use crate::AsciiArt;
-use crate::color::srgb_to_linear;
+use crate::color::{srgb8_to_linear_lut, srgb_to_linear};
 use crate::error::Result;
+
+/// Below this font size glyphs are placed at fractional positions; rounding
+/// to whole pixels would make small cells visibly uneven. Above it, rounding
+/// keeps strokes crisp and the unevenness is negligible.
+const SUBPIXEL_BELOW_PX: f32 = 20.0;
+/// Canvases larger than this get standard rather than maximum compression,
+/// which would take seconds for little gain.
+const BEST_COMPRESSION_MAX_PIXELS: u64 = 4_000_000;
 
 /// Renders `art` to an RGBA image (transparent outside a frame's rounded corners).
 pub fn render_rgba(art: &AsciiArt, face: &Typeface, style: &Style) -> Result<RgbaImage> {
@@ -27,7 +37,7 @@ pub fn render_rgba(art: &AsciiArt, face: &Typeface, style: &Style) -> Result<Rgb
             let mut x = f.title_centre_x - total / 2.0;
             for ch in f.title.chars() {
                 let g = face.raster(ch, f.title_px);
-                canvas.glyph(&g, x.round() as i32, f.title_baseline.round() as i32, f.title_color);
+                canvas.glyph(&g, x, f.title_baseline, f.title_px, f.title_color);
                 x += g.advance;
             }
         }
@@ -36,25 +46,29 @@ pub fn render_rgba(art: &AsciiArt, face: &Typeface, style: &Style) -> Result<Rgb
 
     let mut cache = std::collections::HashMap::new();
     for r in 0..art.rows() {
-        let y = (lay.origin.1 + r as f32 * lay.cell_h + lay.baseline) as i32;
+        let y = lay.origin.1 + r as f32 * lay.cell_h + lay.baseline;
         for (c, &ch) in art.row(r).iter().enumerate() {
             if ch == ' ' {
                 continue;
             }
-            let g = cache.entry(ch).or_insert_with(|| face.raster(ch, style.px));
-            let x = (lay.origin.0 + c as f32 * lay.cell_w) as i32;
-            canvas.glyph(g, x, y, style.fg);
+            let g = cache.entry(ch).or_insert_with(|| face.raster(ch, lay.font_px));
+            canvas.glyph(g, lay.origin.0 + c as f32 * lay.cell_w, y, lay.font_px, style.fg);
         }
     }
     Ok(canvas.into_image())
 }
 
-/// [`render_rgba`] encoded as PNG bytes. Maximum compression: text art is
-/// mostly flat background, and this cuts files to about a third of the default.
+/// [`render_rgba`] encoded as PNG bytes. Text art is mostly flat background,
+/// so maximum compression cuts typical files to about a third.
 pub fn render_png(art: &AsciiArt, face: &Typeface, style: &Style) -> Result<Vec<u8>> {
     let img = render_rgba(art, face, style)?;
+    let compression = if img.width() as u64 * img.height() as u64 <= BEST_COMPRESSION_MAX_PIXELS {
+        CompressionType::Best
+    } else {
+        CompressionType::Default
+    };
     let mut out = Vec::new();
-    PngEncoder::new_with_quality(&mut out, CompressionType::Best, FilterType::Adaptive).write_image(
+    PngEncoder::new_with_quality(&mut out, compression, FilterType::Adaptive).write_image(
         img.as_raw(),
         img.width(),
         img.height(),
@@ -63,12 +77,17 @@ pub fn render_png(art: &AsciiArt, face: &Typeface, style: &Style) -> Result<Vec<
     Ok(out)
 }
 
-/// Premultiplied linear-light RGBA.
+/// Straight-alpha 8-bit sRGB pixels, blended in linear light.
 struct Canvas {
     width: usize,
     height: usize,
-    px: Vec<[f32; 4]>,
+    px: Vec<[u8; 4]>,
+    to_linear: [f32; 256],
+    /// Linear value (quantised to 4096 steps) → sRGB byte.
+    to_srgb: Vec<u8>,
 }
+
+const ENCODE_STEPS: usize = 4096;
 
 fn linear(c: Rgb) -> [f32; 3] {
     [c.0, c.1, c.2].map(|v| srgb_to_linear(v as f32 / 255.0))
@@ -76,20 +95,37 @@ fn linear(c: Rgb) -> [f32; 3] {
 
 impl Canvas {
     fn new(width: usize, height: usize) -> Self {
-        Self { width, height, px: vec![[0.0; 4]; width * height] }
+        let to_srgb = (0..ENCODE_STEPS)
+            .map(|i| {
+                let v = i as f32 / (ENCODE_STEPS - 1) as f32;
+                let s = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+                (s * 255.0).round() as u8
+            })
+            .collect();
+        Self { width, height, px: vec![[0; 4]; width * height], to_linear: srgb8_to_linear_lut(), to_srgb }
     }
 
-    /// Source-over with `coverage` of opaque `color`.
+    fn encode(&self, v: f32) -> u8 {
+        self.to_srgb[(v.clamp(0.0, 1.0) * (ENCODE_STEPS - 1) as f32).round() as usize]
+    }
+
+    /// Source-over with `coverage` of opaque `color` (linear).
     fn blend(&mut self, x: usize, y: usize, coverage: f32, color: [f32; 3]) {
         if coverage <= 0.0 {
             return;
         }
         let a = coverage.min(1.0);
-        let p = &mut self.px[y * self.width + x];
-        for i in 0..3 {
-            p[i] = color[i] * a + p[i] * (1.0 - a);
+        let i = y * self.width + x;
+        let p = self.px[i];
+        let da = p[3] as f32 / 255.0;
+        let out_a = a + da * (1.0 - a);
+        let mut out = [0u8; 4];
+        for c in 0..3 {
+            let d = self.to_linear[p[c] as usize];
+            out[c] = self.encode((color[c] * a + d * da * (1.0 - a)) / out_a);
         }
-        p[3] = a + p[3] * (1.0 - a);
+        out[3] = (out_a * 255.0).round() as u8;
+        self.px[i] = out;
     }
 
     /// Anti-aliased fill of a shape given by its signed distance (in pixels)
@@ -119,42 +155,47 @@ impl Canvas {
         self.fill(cx - r - 1.0, cy - r - 1.0, cx + r + 1.0, cy + r + 1.0, color, |x, y| (x - cx).hypot(y - cy) - r);
     }
 
-    /// Draws a glyph with its pen position at `x` and baseline at `y`.
-    fn glyph(&mut self, g: &super::GlyphRaster, x: i32, y: i32, color: Rgb) {
+    /// Draws a glyph rasterised at `px` with its pen position at `x` and
+    /// baseline at `y`. Small sizes keep the fractional position (the bitmap
+    /// is shifted by bilinear interpolation); large ones snap to whole pixels.
+    fn glyph(&mut self, g: &GlyphRaster, x: f32, y: f32, px: f32, color: Rgb) {
         let color = linear(color);
-        let left = x + g.xmin;
-        let top = y - (g.ymin + g.height as i32);
-        for gy in 0..g.height {
-            let py = top + gy as i32;
-            if !(0..self.height as i32).contains(&py) {
+        let left = x + g.xmin as f32;
+        let top = y - (g.ymin + g.height as i32) as f32;
+        let (ix, iy, fx, fy) = if px < SUBPIXEL_BELOW_PX {
+            (left.floor(), top.floor(), left - left.floor(), top - top.floor())
+        } else {
+            (left.round(), top.round(), 0.0, 0.0)
+        };
+        let src = |gx: isize, gy: isize| {
+            if (0..g.width as isize).contains(&gx) && (0..g.height as isize).contains(&gy) {
+                g.coverage[gy as usize * g.width + gx as usize] as f32 / 255.0
+            } else {
+                0.0
+            }
+        };
+        // With a fractional shift the glyph spreads into one more column and row.
+        let (extra_x, extra_y) = ((fx > 0.0) as isize, (fy > 0.0) as isize);
+        for dy in 0..g.height as isize + extra_y {
+            let py = iy as isize + dy;
+            if !(0..self.height as isize).contains(&py) {
                 continue;
             }
-            for gx in 0..g.width {
-                let px = left + gx as i32;
-                if !(0..self.width as i32).contains(&px) {
+            for dx in 0..g.width as isize + extra_x {
+                let px_ = ix as isize + dx;
+                if !(0..self.width as isize).contains(&px_) {
                     continue;
                 }
-                let coverage = g.coverage[gy * g.width + gx] as f32 / 255.0;
-                self.blend(px as usize, py as usize, coverage, color);
+                // Destination (dx, dy) samples the source at (dx − fx, dy − fy).
+                let coverage = (1.0 - fy) * ((1.0 - fx) * src(dx, dy) + fx * src(dx - 1, dy))
+                    + fy * ((1.0 - fx) * src(dx, dy - 1) + fx * src(dx - 1, dy - 1));
+                self.blend(px_ as usize, py as usize, coverage, color);
             }
         }
     }
 
     fn into_image(self) -> RgbaImage {
-        let encode = |v: f32| {
-            let v = v.clamp(0.0, 1.0);
-            let s = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
-            (s * 255.0).round() as u8
-        };
-        let raw = self
-            .px
-            .iter()
-            .flat_map(|p| {
-                let a = p[3];
-                let un = |c: f32| if a > 0.0 { c / a } else { 0.0 };
-                [encode(un(p[0])), encode(un(p[1])), encode(un(p[2])), (a * 255.0).round() as u8]
-            })
-            .collect();
+        let raw = self.px.into_iter().flatten().collect();
         RgbaImage::from_raw(self.width as u32, self.height as u32, raw).expect("buffer matches size")
     }
 }
@@ -162,7 +203,7 @@ impl Canvas {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::Frame;
+    use crate::render::{Canvas as Size, Frame};
     use crate::{Background, GlyphAtlas, Options, SourceImage};
 
     fn art(fill: u8) -> AsciiArt {
@@ -173,7 +214,7 @@ mod tests {
 
     fn style(frame: bool) -> Style {
         let mut s = Style::for_background(Background::Dark);
-        s.px = 10.0;
+        s.canvas = Size::FontSize(10.0);
         s.frame = frame.then(|| Frame { title: "t".into() });
         s
     }
@@ -217,5 +258,73 @@ mod tests {
         let v = c.into_image().get_pixel(0, 0).0[0];
         // 50% white over black emits half the light: sRGB ≈ 188, not 128.
         assert!((187..=189).contains(&v), "{v}");
+    }
+
+    /// Bounding box of pixels that differ from the background.
+    fn ink_box(img: &RgbaImage, bg: Rgb) -> (u32, u32, u32, u32) {
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+        for (x, y, p) in img.enumerate_pixels() {
+            if p.0[..3] != [bg.0, bg.1, bg.2] {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+        }
+        (x0, y0, x1, y1)
+    }
+
+    #[test]
+    fn fixed_canvas_is_exact_and_letterboxes_the_art() {
+        // The art is twice as wide as tall (4 box cells of 0.6 × 1 row of 1.2),
+        // so in a square canvas it fills the width and sits centred vertically.
+        let a = art(255);
+        let mut s = style(false);
+        s.canvas = Size::Fixed { width: 500, height: 500 };
+        let img = render_rgba(&a, &Typeface::boxes(), &s).unwrap();
+        assert_eq!(img.dimensions(), (500, 500));
+        let (x0, y0, x1, y1) = ink_box(&img, s.bg);
+        // Padding is 3% of the short side: 15 px.
+        assert!(x0.abs_diff(15) <= 1 && x1.abs_diff(484) <= 1, "x {x0}..{x1}");
+        let (top, bottom) = (y0 as i64, 499 - y1 as i64);
+        assert!((top - bottom).abs() <= 2, "centred vertically: {top} above, {bottom} below");
+        assert!(y1 - y0 > 200 && y1 - y0 < 260, "half the width tall: {}", y1 - y0);
+    }
+
+    #[test]
+    fn fixed_canvas_with_frame_keeps_its_size() {
+        let mut s = style(true);
+        s.canvas = Size::Fixed { width: 640, height: 360 };
+        let img = render_rgba(&art(255), &Typeface::boxes(), &s).unwrap();
+        assert_eq!(img.dimensions(), (640, 360));
+    }
+
+    #[test]
+    fn canvas_limits_are_enforced() {
+        let a = art(255);
+        for (w, h) in [(16, 500), (500, 9000), (8192, 8192)] {
+            let mut s = style(false);
+            s.canvas = Size::Fixed { width: w, height: h };
+            assert!(render_rgba(&a, &Typeface::boxes(), &s).is_err(), "{w}×{h}");
+        }
+        // Scaling past the limits shrinks proportionally instead of failing.
+        let (canvas, capped) = Size::fixed_scaled(6000, 4000, 4.0);
+        assert!(capped);
+        let Size::Fixed { width, height } = canvas else { panic!() };
+        assert!(width <= 8192 && (width as u64 * height as u64) <= crate::render::MAX_CANVAS_PIXELS);
+        assert!(((width as f32 / height as f32) - 1.5).abs() < 0.01, "aspect kept: {width}×{height}");
+        assert_eq!(Size::fixed_scaled(430, 383, 2.0), (Size::Fixed { width: 860, height: 766 }, false));
+    }
+
+    #[test]
+    fn small_glyphs_keep_fractional_positions() {
+        // A one-pixel glyph drawn half a pixel to the right splits evenly.
+        let g = GlyphRaster { xmin: 0, ymin: 0, width: 1, height: 1, coverage: vec![255], advance: 1.0 };
+        let mut c = Canvas::new(3, 1);
+        c.glyph(&g, 0.5, 1.0, 8.0, Rgb(255, 255, 255));
+        let img = c.into_image();
+        let (a, b) = (img.get_pixel(0, 0).0[3], img.get_pixel(1, 0).0[3]);
+        assert!(a.abs_diff(128) <= 1 && b.abs_diff(128) <= 1, "{a} {b}");
+        // Large glyphs snap instead.
+        let mut c = Canvas::new(3, 1);
+        c.glyph(&g, 0.6, 1.0, 32.0, Rgb(255, 255, 255));
+        assert_eq!(c.into_image().get_pixel(1, 0).0[3], 255);
     }
 }

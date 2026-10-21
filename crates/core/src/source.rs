@@ -23,6 +23,8 @@ const MAX_DECODE_ALLOC: u64 = 1 << 30;
 pub struct SourceImage {
     width: usize,
     height: usize,
+    /// Size before any working-size downscale: the default export size.
+    original: (usize, usize),
     luma: Vec<f32>,
     /// `None` when every pixel is fully opaque.
     alpha: Option<Vec<f32>>,
@@ -96,7 +98,7 @@ impl SourceImage {
 
     fn from_planes(width: usize, height: usize, luma: Vec<f32>, alpha: Vec<f32>) -> Self {
         let alpha = (!alpha.iter().all(|&a| a >= 1.0)).then_some(alpha);
-        let src = Self { width, height, luma, alpha };
+        let src = Self { width, height, original: (width, height), luma, alpha };
         let factor = width.max(height).div_ceil(MAX_WORKING_SIDE);
         if factor > 1 { src.box_downscale(factor) } else { src }
     }
@@ -133,7 +135,7 @@ impl SourceImage {
         });
         let (luma, alpha): (Vec<f32>, Vec<f32>) = rows.into_iter().flatten().unzip();
         let alpha = self.alpha.as_ref().map(|_| alpha);
-        Self { width: nw, height: nh, luma, alpha }
+        Self { width: nw, height: nh, original: self.original, luma, alpha }
     }
 
     pub fn width(&self) -> usize {
@@ -142,6 +144,11 @@ impl SourceImage {
 
     pub fn height(&self) -> usize {
         self.height
+    }
+
+    /// Size of the image as given, before any downscale to the working size.
+    pub fn original_size(&self) -> (usize, usize) {
+        self.original
     }
 
     /// Linear-light luminance, row-major.
@@ -233,6 +240,7 @@ mod tests {
             .collect();
         let src = SourceImage::from_rgba8(w, 2, &rgba).unwrap();
         assert_eq!((src.width(), src.height()), (MAX_WORKING_SIDE, 1));
+        assert_eq!(src.original_size(), (w, 2));
         assert!(src.luma().iter().all(|&y| (y - 0.5).abs() < 1e-6));
     }
 }

@@ -1,6 +1,6 @@
 import './style.css';
 import licenseUrl from '../../assets/fonts/JetBrainsMono-OFL.txt?url';
-import type { ConvertOptions, ExportOptions, Request, Response } from './protocol';
+import type { ConvertOptions, ExportOptions, Geometry, Request, Response } from './protocol';
 
 // ---------------------------------------------------------------- worker
 
@@ -24,38 +24,76 @@ function call(req: Outgoing): Promise<Response> {
   });
 }
 
+// ---------------------------------------------------------------- output sizes
+
+type SizePreset = { id: string; size: [number, number]; note: string };
+
+/** Popular canvas sizes. The art is fitted inside and centred. */
+const SIZE_PRESETS: SizePreset[] = [
+  { id: '512x512', size: [512, 512], note: 'Avatar' },
+  { id: '1080x1080', size: [1080, 1080], note: 'Square post' },
+  { id: '1080x1350', size: [1080, 1350], note: 'Portrait 4:5' },
+  { id: '1080x1920', size: [1080, 1920], note: 'Story 9:16' },
+  { id: '1280x720', size: [1280, 720], note: 'HD' },
+  { id: '1920x1080', size: [1920, 1080], note: 'Full HD' },
+  { id: '3840x2160', size: [3840, 2160], note: '4K' },
+  { id: '1280x640', size: [1280, 640], note: 'GitHub social' },
+  { id: '1200x630', size: [1200, 630], note: 'Link preview' },
+];
+
 // ---------------------------------------------------------------- state
+
+type ExportState = {
+  /** 'original', 'custom' or a SIZE_PRESETS id. */
+  sizePreset: string;
+  scale: number;
+  customWidth: number;
+  customHeight: number;
+  frame: boolean;
+  title: string;
+  animate: boolean;
+  revealMs: number;
+  loop: boolean;
+  loopPause: number;
+  svgText: boolean;
+};
 
 type UiState = {
   options: ConvertOptions;
   charsetChoice: ConvertOptions['charset'] | 'custom';
   customChars: string;
-  export: ExportOptions & { loop: boolean; loopPause: number };
+  export: ExportState;
 };
 
 const STORAGE_KEY = 'img2ascii:v1';
 
 let defaults: ConvertOptions;
-let cell: [number, number] = [0.6, 1.32];
-let palettes: Record<'dark' | 'light', [string, string]>;
+/** Per pixel of font size: advance, line height, ascent, descent (negative). */
+let metrics: [number, number, number, number] = [0.6, 1.32, 1.02, -0.3];
 let state: UiState;
 let sourceName = 'ascii';
 let hasImage = false;
+let original: [number, number] | undefined;
 let result: { text: string; cols: number; rows: number; ms: number } | undefined;
+let geometry: Geometry | undefined;
 let score: { ssim: number; toneError: number } | undefined;
 let latestConvert = 0;
-let zoomPx: number | undefined; // undefined = fit to view
+let latestGeometry = 0;
+let actualSize = false;
 let playing: number | undefined;
 
-const exportDefaults: UiState['export'] = {
-  fontSize: 16,
+const exportDefaults: ExportState = {
+  sizePreset: 'original',
+  scale: 1,
+  customWidth: 1000,
+  customHeight: 1000,
   frame: true,
   title: '',
   animate: true,
   revealMs: 3000,
-  svgText: false,
   loop: false,
   loopPause: 2000,
+  svgText: false,
 };
 
 function initialState(): UiState {
@@ -93,7 +131,10 @@ function save() {
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const art = $<HTMLPreElement>('art');
-const win = $<HTMLDivElement>('window');
+const sizer = $<HTMLDivElement>('sizer');
+const canvasEl = $<HTMLDivElement>('canvas');
+const titleEl = $<HTMLSpanElement>('title');
+const dots = Array.from(canvasEl.querySelectorAll<HTMLSpanElement>('.dot'));
 const viewport = $<HTMLDivElement>('viewport');
 const stats = $<HTMLSpanElement>('stats');
 const toastEl = $<HTMLDivElement>('toast');
@@ -151,7 +192,7 @@ function range(
   return field(parent, label, input, out);
 }
 
-function choice<T extends string>(
+function choice<T extends string | number>(
   parent: HTMLElement,
   label: string,
   options: [T, string][],
@@ -210,6 +251,82 @@ function text(parent: HTMLElement, label: string, placeholder: string, get: () =
   refresh();
   refreshers.push(refresh);
   return field(parent, label, input);
+}
+
+/** Preset chips: one press picks the canvas size. */
+function sizeChips(parent: HTMLElement, set: (id: string) => void) {
+  const grid = document.createElement('div');
+  grid.className = 'chips';
+  grid.setAttribute('role', 'group');
+  grid.setAttribute('aria-label', 'Output size');
+  const entries: [string, string, string][] = [
+    ['original', 'Original', ''],
+    ...SIZE_PRESETS.map((p): [string, string, string] => [p.id, `${p.size[0]} × ${p.size[1]}`, p.note]),
+    ['custom', 'Custom', 'Any size'],
+  ];
+  const chips = entries.map(([id, label, note]) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chip';
+    const strong = document.createElement('strong');
+    strong.textContent = label;
+    const small = document.createElement('small');
+    small.textContent = note;
+    b.append(strong, small);
+    b.addEventListener('click', () => {
+      set(id);
+      refresh();
+    });
+    grid.append(b);
+    return [id, b, small] as const;
+  });
+  const refresh = () => {
+    for (const [id, b, small] of chips) {
+      b.setAttribute('aria-pressed', String(id === state.export.sizePreset));
+      if (id === 'original') small.textContent = original ? `${original[0]} × ${original[1]}` : 'Image size';
+    }
+  };
+  refresh();
+  refreshers.push(refresh);
+  const wrap = document.createElement('div');
+  wrap.className = 'field';
+  const head = document.createElement('span');
+  head.className = 'label';
+  head.textContent = 'Output size (SVG/PNG)';
+  wrap.append(head, grid);
+  parent.append(wrap);
+}
+
+function customSize(parent: HTMLElement, onChange: () => void) {
+  const row = document.createElement('div');
+  row.className = 'size-row';
+  const input = (label: string, get: () => number, set: (v: number) => void) => {
+    const el = document.createElement('input');
+    el.type = 'number';
+    Object.assign(el, { min: '32', max: '8192', step: '1' });
+    el.setAttribute('aria-label', label);
+    el.addEventListener('change', () => {
+      const v = Math.round(Number(el.value));
+      if (Number.isFinite(v) && v >= 32 && v <= 8192) {
+        set(v);
+        onChange();
+      } else {
+        el.value = String(get());
+        toast('Sizes must be between 32 and 8192 px.', true);
+      }
+    });
+    refreshers.push(() => (el.value = String(get())));
+    el.value = String(get());
+    return el;
+  };
+  const times = document.createElement('span');
+  times.textContent = '×';
+  row.append(
+    input('Custom width', () => state.export.customWidth, (v) => (state.export.customWidth = v)),
+    times,
+    input('Custom height', () => state.export.customHeight, (v) => (state.export.customHeight = v)),
+  );
+  return field(parent, 'Custom size (px)', row);
 }
 
 /** Shows a control only while `when` holds. */
@@ -277,7 +394,6 @@ function buildControls() {
 
   choice(conv, 'Background', [['dark', 'Dark'], ['light', 'Light / negative']], () => o().background, (v) => {
     o().background = v;
-    applyPalette();
     changed();
   });
   range(conv, 'Dithering', { min: 0, max: 1, step: 0.05, format: (v) => v.toFixed(2) }, () => o().dither, (v) => {
@@ -319,12 +435,22 @@ function buildControls() {
   const exportChanged = () => {
     updateVisibility();
     save();
-    renderTitle();
+    requestGeometry();
   };
-  range(exp, 'Font size (SVG/PNG)', { min: 6, max: 48, step: 1, format: (v) => `${v}px` }, () => e().fontSize, (v) => {
-    e().fontSize = v;
+  sizeChips(exp, (id) => {
+    e().sizePreset = id;
     exportChanged();
   });
+  showWhen(customSize(exp, exportChanged), () => e().sizePreset === 'custom');
+  choice(exp, 'Scale', [[1, '1×'], [2, '2×'], [3, '3×'], [4, '4×']], () => e().scale, (v) => {
+    e().scale = v;
+    exportChanged();
+  });
+  const info = document.createElement('p');
+  info.className = 'muted size-info';
+  info.id = 'size-info';
+  exp.append(info);
+
   check(exp, 'Window frame', () => e().frame, (v) => {
     e().frame = v;
     exportChanged();
@@ -369,7 +495,6 @@ function buildControls() {
   $('reset').addEventListener('click', () => {
     state = { ...state, options: { ...defaults }, charsetChoice: 'auto' };
     refreshers.forEach((r) => r());
-    applyPalette();
     changed();
   });
   updateVisibility();
@@ -401,14 +526,24 @@ function requestConvert() {
   convertQueued = true;
   queueMicrotask(() => {
     convertQueued = false;
-    latestConvert = send({ type: 'convert', options: convertOptions() });
+    latestConvert = send({ type: 'convert', options: convertOptions(), export: exportOptions() });
   });
+}
+
+/** Re-lays out the current result after an export option changed. */
+function requestGeometry() {
+  if (!result) return;
+  latestGeometry = send({ type: 'geometry', export: exportOptions() });
 }
 
 function exportOptions(): ExportOptions {
   const e = state.export;
+  const preset = SIZE_PRESETS.find((p) => p.id === e.sizePreset);
+  const size: [number, number] | null =
+    e.sizePreset === 'custom' ? [e.customWidth, e.customHeight] : preset ? preset.size : null;
   return {
-    fontSize: e.fontSize,
+    size,
+    scale: e.scale,
     frame: e.frame,
     title: titleText(),
     animate: e.animate,
@@ -420,63 +555,98 @@ function exportOptions(): ExportOptions {
 
 const titleText = () => state.export.title.trim() || `${sourceName}.txt`;
 
-function renderTitle() {
-  $('title').textContent = titleText();
-  win.querySelector<HTMLElement>('.titlebar')!.hidden = !state.export.frame;
-}
-
-function applyPalette() {
-  const [fg, bg] = palettes[state.options.background];
-  win.style.setProperty('--art-fg', fg);
-  win.style.setProperty('--art-bg', bg);
-  win.style.setProperty('--frame-border', mix(bg, fg, 0.18));
-  win.style.setProperty('--frame-title', mix(bg, fg, 0.55));
-}
-
-/** Same frame-colour derivation as the Rust renderer, so the preview matches exports. */
-function mix(a: string, b: string, t: number) {
-  const ch = (hex: string, i: number) => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16);
-  const c = [0, 1, 2].map((i) => Math.round(ch(a, i) + (ch(b, i) - ch(a, i)) * t));
-  return `#${c.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
-}
-
 function showResult() {
-  if (!result) return;
+  if (!result || !geometry) return;
   stopPlaying();
   art.textContent = result.text;
-  win.hidden = false;
+  sizer.hidden = false;
   $('empty').hidden = true;
   buttons.forEach((b) => (b.disabled = false));
-  layout();
+  applyGeometry();
   renderStats();
 }
 
 function renderStats() {
   if (!result) return;
-  const parts = [`${result.cols}×${result.rows}`, `${result.ms.toFixed(0)} ms`];
+  const parts = [`${result.cols}×${result.rows} characters`, `${result.ms.toFixed(0)} ms`];
   if (score) parts.push(`SSIM ${score.ssim.toFixed(3)}`, `tone error ${score.toneError.toFixed(3)}`);
   stats.textContent = parts.join(' · ');
 }
 
-/** Sizes the preview font so the grid fits the viewport (or uses the fixed zoom). */
-function layout() {
-  if (!result) return;
-  const [advance, line] = cell;
-  const style = getComputedStyle(viewport);
-  const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + 34;
-  const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) + 20 + (state.export.frame ? 36 : 0);
-  const fit = Math.min(
-    (viewport.clientWidth - padX) / (result.cols * advance),
-    (viewport.clientHeight - padY) / (result.rows * line),
-  );
-  const px = Math.max(1, Math.min(zoomPx ?? fit, 48));
-  art.style.fontSize = `${px}px`;
-  art.style.lineHeight = `${px * line}px`;
-  art.style.width = `${result.cols * advance * px + 32}px`;
-  $('zoom').textContent = zoomPx ? 'Fit' : 'Actual size';
+/**
+ * Draws the preview exactly like the export: a canvas of the output size in
+ * canvas pixels (frame, dots, title, art at the computed font size), then
+ * scaled as a whole to fit the viewport.
+ */
+function applyGeometry() {
+  const g = geometry;
+  if (!g) return;
+  const [, line, ascent, descent] = metrics;
+  // Where CSS puts the baseline in a line box of height `line·px`; matches
+  // the renderer's centring of the ascent..descent box.
+  const baselineOffset = (px: number) => (line * px - (ascent - descent) * px) / 2 + ascent * px;
+
+  Object.assign(canvasEl.style, {
+    width: `${g.width}px`,
+    height: `${g.height}px`,
+    background: g.bg,
+    color: g.fg,
+    borderRadius: g.frame ? `${g.frame.radius}px` : '0',
+    boxShadow: g.frame ? `inset 0 0 0 1px ${g.frame.border}` : 'none',
+  });
+  Object.assign(art.style, {
+    left: `${g.originX}px`,
+    top: `${g.originY}px`,
+    fontSize: `${g.fontPx}px`,
+    lineHeight: `${g.cellH}px`,
+  });
+  const f = g.frame;
+  titleEl.hidden = !f;
+  dots.forEach((d, i) => {
+    d.hidden = !f;
+    if (!f) return;
+    Object.assign(d.style, {
+      left: `${f.dots[i][0] - f.dotRadius}px`,
+      top: `${f.dots[i][1] - f.dotRadius}px`,
+      width: `${f.dotRadius * 2}px`,
+      height: `${f.dotRadius * 2}px`,
+      background: f.dotColors[i],
+    });
+  });
+  if (f) {
+    titleEl.textContent = titleText();
+    Object.assign(titleEl.style, {
+      left: `${f.titleCentreX}px`,
+      top: `${f.titleBaseline - baselineOffset(f.titlePx)}px`,
+      fontSize: `${f.titlePx}px`,
+      lineHeight: `${line * f.titlePx}px`,
+      color: f.titleColor,
+    });
+  }
+  const info = document.getElementById('size-info');
+  if (info) {
+    info.textContent =
+      `Output ${Math.round(g.width)} × ${Math.round(g.height)} px · glyphs ${g.fontPx.toFixed(1)} px` +
+      (g.capped ? ' · reduced to the size limit' : '');
+  }
+  fitToViewport();
 }
 
-new ResizeObserver(() => layout()).observe(viewport);
+/** Scales the canvas to fit the viewport, or shows it 1:1 in actual-size mode. */
+function fitToViewport() {
+  const g = geometry;
+  if (!g) return;
+  const style = getComputedStyle(viewport);
+  const availW = viewport.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  const availH = viewport.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+  const k = actualSize ? 1 : Math.max(0.05, Math.min(availW / g.width, availH / g.height));
+  canvasEl.style.transform = `scale(${k})`;
+  sizer.style.width = `${g.width * k}px`;
+  sizer.style.height = `${g.height * k}px`;
+  $('zoom').textContent = actualSize ? 'Fit' : 'Actual size';
+}
+
+new ResizeObserver(() => fitToViewport()).observe(viewport);
 
 // ---------------------------------------------------------------- reveal preview
 
@@ -521,12 +691,13 @@ async function play() {
 
 async function loadFile(file: Blob, name: string) {
   sourceName = name.replace(/\.[^.]+$/, '') || 'ascii';
-  renderTitle();
   try {
     const r = await call({ type: 'load', file });
     if (r.type !== 'loaded') return;
     hasImage = true;
-    $('source-info').textContent = `${name} — working size ${r.width}×${r.height}`;
+    original = [r.originalWidth, r.originalHeight];
+    refreshers.forEach((f) => f());
+    $('source-info').textContent = `${name} — ${r.originalWidth}×${r.originalHeight}`;
     requestConvert();
   } catch (err) {
     toast(`Couldn't open the image: ${(err as Error).message}`, true);
@@ -654,8 +825,8 @@ async function exportAs(format: 'svg' | 'png') {
 function wireActions() {
   $('play').addEventListener('click', () => void play());
   $('zoom').addEventListener('click', () => {
-    zoomPx = zoomPx ? undefined : state.export.fontSize;
-    layout();
+    actualSize = !actualSize;
+    fitToViewport();
   });
   $('copy').addEventListener('click', async () => {
     if (!result) return;
@@ -677,12 +848,9 @@ worker.onmessage = (e: MessageEvent<Response>) => {
   const msg = e.data;
   if (msg.type === 'ready') {
     defaults = msg.defaults;
-    cell = msg.cell;
-    palettes = msg.palettes;
+    metrics = msg.metrics;
     state = initialState();
     buildControls();
-    applyPalette();
-    renderTitle();
     return;
   }
   const resolve = waiting.get(msg.id);
@@ -691,10 +859,17 @@ worker.onmessage = (e: MessageEvent<Response>) => {
     resolve(msg);
     return;
   }
+  if (msg.type === 'geometry') {
+    if (msg.id !== latestGeometry) return;
+    geometry = msg.geometry;
+    applyGeometry();
+    return;
+  }
   // Conversion results: only the newest request counts.
-  if (msg.id !== latestConvert) return;
+  if (msg.id !== latestConvert && msg.id !== latestGeometry) return;
   if (msg.type === 'converted') {
     result = msg;
+    geometry = msg.geometry;
     score = undefined;
     showResult();
   } else if (msg.type === 'score') {

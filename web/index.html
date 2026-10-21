@@ -55,12 +55,13 @@
           </div>
         </div>
         <div class="viewport" id="viewport">
-          <div class="window" id="window" hidden>
-            <div class="titlebar">
+          <!-- The export canvas at its real pixel size, scaled to fit the viewport. -->
+          <div class="sizer" id="sizer" hidden>
+            <div class="canvas" id="canvas">
               <span class="dot"></span><span class="dot"></span><span class="dot"></span>
               <span class="title" id="title"></span>
+              <pre id="art" aria-label="ASCII output"></pre>
             </div>
-            <pre id="art" aria-label="ASCII output"></pre>
           </div>
           <p class="empty" id="empty">Drop an image to get started.</p>
         </div>
