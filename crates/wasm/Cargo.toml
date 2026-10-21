@@ -1,0 +1,18 @@
+[package]
+name = "ascii-wasm"
+description = "WebAssembly bridge for the web app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Single-threaded (no rayon) with the bundled font.
+ascii-core = { path = "../core", default-features = false, features = ["embedded-font"] }
+console_error_panic_hook = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+# Must match the installed wasm-bindgen CLI exactly.
+wasm-bindgen = "=0.2.129"

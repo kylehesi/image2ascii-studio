@@ -1,0 +1,11 @@
+[package]
+name = "img2ascii"
+description = "Command-line image to ASCII converter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1"
+ascii-core.workspace = true
+clap = { version = "4", features = ["derive"] }

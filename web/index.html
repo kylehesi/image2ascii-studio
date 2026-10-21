@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>img2ascii</title>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="panel">
+        <header class="brand">
+          <h1>img2ascii</h1>
+          <p>Image to ASCII — in your browser, on your machine</p>
+        </header>
+
+        <section>
+          <h2>Image</h2>
+          <label class="drop" id="drop" tabindex="0">
+            <input type="file" id="file" accept="image/*" hidden />
+            <strong>Choose an image</strong>
+            <span>or drag and drop it, or paste with Ctrl+V</span>
+          </label>
+          <button type="button" id="sample" class="ghost">Try a sample image</button>
+          <p class="muted" id="source-info"></p>
+        </section>
+
+        <section>
+          <h2>Conversion</h2>
+          <div id="convert-controls"></div>
+        </section>
+
+        <section>
+          <h2>Tone</h2>
+          <div id="tone-controls"></div>
+          <button type="button" id="reset" class="ghost">Reset to defaults</button>
+        </section>
+
+        <section>
+          <h2>Export</h2>
+          <div id="export-controls"></div>
+        </section>
+      </aside>
+
+      <main class="stage">
+        <div class="toolbar">
+          <span class="stats" id="stats">Waiting for an image</span>
+          <div class="actions">
+            <button type="button" id="play" disabled>▶ Play</button>
+            <button type="button" id="zoom" disabled>Actual size</button>
+            <button type="button" id="copy" disabled>Copy</button>
+            <button type="button" id="dl-txt" disabled>TXT</button>
+            <button type="button" id="dl-svg" disabled>SVG</button>
+            <button type="button" id="dl-png" disabled>PNG</button>
+          </div>
+        </div>
+        <div class="viewport" id="viewport">
+          <div class="window" id="window" hidden>
+            <div class="titlebar">
+              <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              <span class="title" id="title"></span>
+            </div>
+            <pre id="art" aria-label="ASCII output"></pre>
+          </div>
+          <p class="empty" id="empty">Drop an image to get started.</p>
+        </div>
+        <div class="toast" id="toast" role="status" hidden></div>
+        <footer>
+          Everything runs in your browser; images are never uploaded. Font:
+          <a id="license" target="_blank" rel="noopener">JetBrains Mono (OFL 1.1)</a>
+        </footer>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

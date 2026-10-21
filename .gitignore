@@ -1,0 +1,9 @@
+/target
+*.preview.png
+
+# web
+/web/node_modules
+/web/dist
+/web/src/wasm
+/.vite
+/web/.vite

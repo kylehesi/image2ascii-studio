@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/cli", "crates/wasm"]
+# The WebAssembly bridge only builds for wasm32; keep it out of plain `cargo test`.
+default-members = ["crates/core", "crates/cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.dependencies]
+ascii-core = { path = "crates/core" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
